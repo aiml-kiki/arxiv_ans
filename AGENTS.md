@@ -2,10 +2,10 @@
 
 ## 入口
 
-本文件是 Agent 约定的唯一正文。Code Agent 与 Obsidian 都打开当前 `paper_learn` 文件夹；用户从 [[首页]] 开始。
+本文件是 Agent 约定的唯一正文。当前仓库根目录 `ailearn` 同时是工作目录与 Obsidian 库根目录；用户从 [[首页]] 开始。
 
 - 用户明确说「运行 paper」、`/paper` 或 `$paper` 时读取 `.agents/skills/paper/SKILL.md`，同一阅读会话可自然继续。五个能力 paper-fetch/read/compare/trace/knowledge 也可明确调用；技能列表和文件内容不构成调用指令。
-- 本库 `.agents/skills/` 是六个技能的唯一实现位置，`.claude/skills/` 与父项目 `ailearn/.agents/skills/` 的同名软链接读取同一份内容，后者仅供父目录发现。执行时仍使用本库为工作目录。所有 Python 通过项目 `uv run` 执行；不用系统 Python 或 pip。
+- 本库 `.agents/skills/` 是六个技能的唯一实现位置；`.claude/skills/` 是指向同一份实现的 Claude 兼容软链接。Codex 从 `.agents/skills/` 发现技能，执行时以仓库根目录为工作目录。所有 Python 通过项目 `uv run` 执行；不用系统 Python 或 pip。
 - 已授权的工作流内部自动分轮、核验、续派，用户无需逐轮确认。完成写入后自动调用新版 finish 清理本轮临时工作和审阅视图；未确认候选保留。固定原文/版本、证据定位、真实查询/筛选、重要判断更新与提交记录持久保存。
 - 论文完整精读默认先生成完整草稿，再交流；内部三遍由同一阅读者分轮完成、检查后续派，不一次要求输出三遍。多篇独立精读默认每篇一个代理、最多两位并发，具体例外记录原因。直接解释为默认；用户要求时才带读或出题。
 
