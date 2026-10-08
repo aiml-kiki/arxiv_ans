@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paper-query-import-v1",
+  "title": "Actual supplied list for manual/browser import; provider raw formats use their own schema",
+  "type": "object",
+  "required": ["records"],
+  "properties": {
+    "records": {"type": "array", "items": {
+      "type": "object",
+      "anyOf": [{"required": ["title"]}, {"required": ["doi"]}, {"required": ["arxiv"]}, {"required": ["openalex"]}, {"required": ["provider_id"]}, {"required": ["url"]}],
+      "properties": {
+        "title": {"type": ["string", "null"]}, "doi": {"type": ["string", "null"]},
+        "arxiv": {"type": ["string", "null"]}, "openalex": {"type": ["string", "null"]},
+        "provider_id": {"type": ["string", "null"]}, "url": {"type": ["string", "null"]},
+        "version": {"type": ["string", "null"]}, "published": {"type": ["string", "null"]},
+        "authors": {"type": "array", "items": {"type": "string"}}, "abstract": {"type": ["string", "null"]},
+        "study_id": {"type": ["string", "null"]}, "metadata": {"type": "object"}
+      }
+    }},
+    "reported_total": {"type": ["integer", "null"], "minimum": 0},
+    "continuation": {"type": ["string", "integer", "null"]},
+    "citation_edges": {"type": "array", "items": {"type": "object", "required": ["source", "target", "location"], "properties": {
+      "source": {"type": "string", "minLength": 1}, "target": {"type": "string", "minLength": 1}, "location": {"type": "string", "minLength": 1}
+    }}}
+  }
+}

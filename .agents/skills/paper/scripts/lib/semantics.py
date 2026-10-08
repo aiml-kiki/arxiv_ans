@@ -1,0 +1,518 @@
+"""Compile explicitly registered Markdown research objects; never infer support.
+
+The index is disposable. Source responses and review decisions are persistent;
+neither this compiler nor impact propagation edits a scientific note.
+"""
+from __future__ import annotations
+
+import argparse
+from collections import defaultdict, deque
+import json
+from pathlib import Path
+import re
+
+from .core import default_root, digest, inside, locked, read_json, safe_id, utc_now, write_json
+from .notes import note_paths, read_note, visible_markdown
+
+FORMAT = "paper-semantic-v1"
+OBJECT_TYPES = {"命题": "claim", "关系": "relation", "未解问题": "question", "知识更新": "delta"}
+CLAIM_TYPES = {"机制", "经验结果", "理论", "实现", "跨篇选择", "假设"}
+VERDICTS = {"支持", "有条件支持", "证据不足", "相反证据", "原文未知"}
+EVIDENCE_TYPES = {"支持", "限制", "反驳", "背景"}
+RELATIONS = {"导航", "前置", "实例", "证据支持", "依赖", "限制", "反例", "引用", "承继", "替代", "分叉", "组合"}
+ATTRIBUTIONS = {"作者明说", "分析者推断", "待核验线索"}
+QUESTION_STATES = {"未解", "已解决", "已澄清为不同条件", "暂缓"}
+DELTA_TYPES = {"新建", "补充实例", "澄清条件", "修正判断", "拆分", "合并", "留在论文", "待核验", "不变"}
+ALLOWED_FIELDS = {
+    "claim": {"研究对象", "判断类型", "范围", "提出者", "证据", "依赖", "裁决", "假设", "区分观察"},
+    "relation": {"研究对象", "源", "目标", "关系类型", "归属", "范围", "证据"},
+    "question": {"研究对象", "问题状态", "范围", "竞争解释", "区分观察", "进展", "参与命题", "证据"},
+    "delta": {"研究对象", "增量类型", "旧判断", "新判断", "处理决定", "受影响", "证据"},
+}
+FIELD = re.compile(r"^\*\*([^*\n：:]+)[：:]\*\*\s*(.*?)\s*$")
+ANCHOR = re.compile(r"(?<!\S)\^([A-Za-z0-9-]+)\s*$")
+WIKI = re.compile(r"\[\[([^\]\n]+)\]\]")
+PLACEHOLDER = re.compile(r"^(?:<.*>|待填写|TODO|TBD|\.\.\.|…)$", re.I)
+INDEX_PATH = ".research/index/semantic.json"
+
+
+def _filled(value):
+    return bool(str(value).strip()) and not PLACEHOLDER.fullmatch(str(value).strip())
+
+
+def _slots(value):
+    """Full-width separator avoids splitting Wiki aliases or Markdown tables."""
+    parts = [part.strip() for part in value.split("｜")]
+    head, fields = parts[0], {}
+    for part in parts[1:]:
+        if "=" not in part:
+            raise ValueError(f"槽位必须为 名称=值：{part}")
+        name, text = part.split("=", 1)
+        if name.strip() in fields:
+            raise ValueError(f"重复槽位：{name.strip()}")
+        fields[name.strip()] = text.strip()
+    return head, fields
+
+
+def _one(fields, name, required=True):
+    values = fields.get(name, [])
+    if len(values) > 1:
+        raise ValueError(f"{name}只允许一行；重复证据/依赖另按对应字段处理")
+    if required and (not values or not _filled(values[0])):
+        raise ValueError(f"缺少有效字段：{name}")
+    return values[0] if values else None
+
+
+def _refs(value, current_path):
+    matches = list(WIKI.finditer(value))
+    if not matches:
+        raise ValueError("语义引用须为 [[库根相对页#^稳定块ID]]")
+    refs = []
+    for match in matches:
+        dest = match[1].split("|", 1)[0].strip()
+        if "#^" not in dest:
+            raise ValueError(f"语义引用缺少稳定块 ID：{dest}")
+        page, block = dest.rsplit("#^", 1)
+        if not re.fullmatch(r"[A-Za-z0-9-]+", block):
+            raise ValueError(f"块 ID 只能用 ASCII 字母、数字及连字符：{block}")
+        if not page:
+            page = current_path
+        elif not page.endswith(".md"):
+            page += ".md"
+        if page.split("/", 1)[0] not in {"论文", "知识", "专题"}:
+            raise ValueError(f"语义引用需用正式页的库根相对路径：{page}")
+        if ".." in Path(page).parts or Path(page).is_absolute():
+            raise ValueError(f"非法语义路径：{page}")
+        refs.append(f"{page}#^{block}")
+    return refs
+
+
+def _evidence(value):
+    kind, slots = _slots(value)
+    if kind not in EVIDENCE_TYPES:
+        raise ValueError(f"未知证据关系：{kind}")
+    required = {"来源", "版本", "位置", "核验", "链接", "说明"}
+    missing = [name for name in required if not _filled(slots.get(name, ""))]
+    if missing:
+        raise ValueError(f"证据缺少有效槽位：{', '.join(sorted(missing))}")
+    if set(slots) - required - {"哈希"}:
+        raise ValueError("证据存在未知槽位；仅使用协议定义的字段")
+    if slots["位置"] in {"全文", "全篇", "paper", "source"}:
+        raise ValueError("证据需具体页/节/表图/代码位置，不能只有全文")
+    if slots["核验"] not in {"定位已核", "未核"}:
+        raise ValueError("证据核验只能为定位已核/未核；不能以此表示独立复现")
+    if slots.get("哈希") and not re.fullmatch(r"[0-9a-f]{64}", slots["哈希"]):
+        raise ValueError("来源哈希须为完整 SHA-256")
+    return {"relation": kind, "source_id": slots["来源"], "version": slots["版本"],
+            "location": slots["位置"], "verification": slots["核验"],
+            "link": slots["链接"], "rationale": slots["说明"],
+            "requested_sha256": slots.get("哈希")}
+
+
+def parse_note(path, text, line_offset=0):
+    """Return explicit records and diagnostics. Unregistered prose stays prose."""
+    lines = visible_markdown(text).splitlines()
+    original = text.splitlines()
+    records, errors, used = [], [], set()
+    for index, line in enumerate(lines):
+        start = FIELD.fullmatch(line)
+        if not start or start[1].strip() != "研究对象":
+            continue
+        label = f"{path}:{index + 1 + line_offset}"
+        try:
+            object_type = OBJECT_TYPES.get(start[2])
+            if not object_type:
+                raise ValueError(f"研究对象未知：{start[2]}")
+            before = index - 1
+            while before >= 0 and not lines[before].strip():
+                before -= 1
+            if before < 0:
+                raise ValueError("研究对象字段须紧邻带段尾稳定块 ID 的正文")
+            match = ANCHOR.search(lines[before])
+            if not match or not lines[before][:match.start()].strip():
+                raise ValueError("注册正文须以空格 + ^ASCII块ID 结束；孤立或非法 ID 无效")
+            if re.match(r"^\s*(?:#{1,6}\s|[-*+]\s|\d+[.)]\s|>|\|)", lines[before]):
+                raise ValueError("注册正文必须是普通段落，不能把块 ID 放在标题、表格或 callout 内")
+            block = match[1]
+            if block in used:
+                raise ValueError(f"同页重复研究对象块 ID：{block}")
+            used.add(block)
+            paragraph_start = before
+            while paragraph_start > 0 and lines[paragraph_start - 1].strip():
+                if FIELD.fullmatch(lines[paragraph_start - 1]) or re.match(r"^\s*#", lines[paragraph_start - 1]):
+                    break
+                paragraph_start -= 1
+            # Inline code can name an actual parameter or operator. Preserve it
+            # after locating registration outside examples and comments.
+            prose = "\n".join(original[paragraph_start:before] + [original[before][:match.start()].rstrip()])
+            fields = defaultdict(list)
+            cursor = index
+            while cursor < len(lines):
+                if not lines[cursor].strip():
+                    cursor += 1
+                    continue
+                field = FIELD.fullmatch(lines[cursor])
+                if not field or (cursor > index and field[1] == "研究对象"):
+                    break
+                actual = FIELD.fullmatch(original[cursor])
+                fields[field[1].strip()].append(actual[2] if actual else field[2])
+                cursor += 1
+            unknown = set(fields) - ALLOWED_FIELDS[object_type]
+            if unknown:
+                raise ValueError(f"注册单元未知字段：{', '.join(sorted(unknown))}；普通解释另写段落")
+            record = {"key": f"{path}#^{block}", "id": block, "path": path,
+                      "line": paragraph_start + 1 + line_offset, "kind": object_type, "text": prose,
+                      "fields": dict(fields), "evidence": [], "dependencies": []}
+            if object_type == "claim":
+                record["claim_type"] = _one(fields, "判断类型")
+                if record["claim_type"] not in CLAIM_TYPES:
+                    raise ValueError(f"未知判断类型：{record['claim_type']}")
+                record["scope"] = _one(fields, "范围")
+                record["proponent"] = _one(fields, "提出者")
+                if record["proponent"] not in {"作者", "分析者"}:
+                    raise ValueError("提出者只能为作者/分析者")
+                verdict, slots = _slots(_one(fields, "裁决"))
+                if verdict not in VERDICTS or not _filled(slots.get("理由", "")) or set(slots) != {"理由"}:
+                    raise ValueError("裁决须为合法状态｜理由=具体依据与边界")
+                record.update(verdict=verdict, rationale=slots["理由"])
+                record["assumptions"] = _one(fields, "假设", required=False)
+                record["distinguishing_observation"] = _one(fields, "区分观察", required=False)
+                record["evidence"] = [_evidence(value) for value in fields.get("证据", [])]
+                if not record["evidence"]:
+                    raise ValueError("核心命题至少明确一条固定来源证据；证据不足可以保留未核依据与限制")
+                for value in fields.get("依赖", []):
+                    record["dependencies"].extend(_refs(value, path))
+            elif object_type == "relation":
+                sources = _refs(_one(fields, "源"), path)
+                targets = _refs(_one(fields, "目标"), path)
+                if len(sources) != 1 or len(targets) != 1:
+                    raise ValueError("一个关系单元须有一个源和一个目标")
+                relation = _one(fields, "关系类型")
+                attribution = _one(fields, "归属")
+                if relation not in RELATIONS or attribution not in ATTRIBUTIONS:
+                    raise ValueError("未知关系类型或归属")
+                record.update(source=sources[0], target=targets[0], relation=relation,
+                              attribution=attribution, scope=_one(fields, "范围"))
+                record["evidence"] = [_evidence(value) for value in fields.get("证据", [])]
+                if relation in {"承继", "替代", "分叉", "组合"} and attribution != "待核验线索":
+                    if len(record["evidence"]) < 2:
+                        raise ValueError("确认的技术关系须明确两端来源；两条字段不能自动证明双端语义")
+                if attribution == "待核验线索":
+                    record["status"] = "需复核"
+            elif object_type == "question":
+                record["status"] = _one(fields, "问题状态")
+                if record["status"] not in QUESTION_STATES:
+                    raise ValueError("未知问题状态")
+                record["scope"] = _one(fields, "范围")
+                record["competing_explanations"] = _one(fields, "竞争解释")
+                record["distinguishing_observation"] = _one(fields, "区分观察")
+                record["progress"] = _one(fields, "进展")
+                record["participants"] = []
+                for value in fields.get("参与命题", []):
+                    record["participants"].extend(_refs(value, path))
+                if not record["participants"]:
+                    raise ValueError("未解问题须关联明确的参与命题")
+                record["evidence"] = [_evidence(value) for value in fields.get("证据", [])]
+            else:
+                delta_type = _one(fields, "增量类型")
+                if delta_type not in DELTA_TYPES:
+                    raise ValueError("未知知识增量类型")
+                record.update(delta_type=delta_type, before=_one(fields, "旧判断"),
+                              after=_one(fields, "新判断"), decision=_one(fields, "处理决定"))
+                record["affected"] = []
+                for value in fields.get("受影响", []):
+                    record["affected"].extend(_refs(value, path))
+                record["evidence"] = [_evidence(value) for value in fields.get("证据", [])]
+                if delta_type != "不变" and not record["evidence"]:
+                    raise ValueError("实际知识更新须有固定来源依据")
+            record["fingerprint"] = digest(json.dumps({"kind": object_type, "text": prose, "fields": dict(fields)},
+                                                        ensure_ascii=False, sort_keys=True))
+            records.append(record)
+        except ValueError as exc:
+            errors.append({"path": path, "line": index + 1 + line_offset, "message": f"{label} {exc}"})
+    return records, errors
+
+
+def _source_catalog(root):
+    catalog, manifest_hashes, errors = [], {}, []
+    for path in sorted(inside(root, ".research/sources").rglob("*.json")):
+        relative = str(path.relative_to(root))
+        try:
+            data = read_json(path)
+            if not isinstance(data, dict) or not data.get("source_path") or not data.get("source_sha256"):
+                continue  # coverage and other sidecars are not source manifests
+            source = inside(root, data["source_path"])
+            manifest_hashes[relative] = digest(path.read_bytes())
+            if not source.is_file() or digest(source.read_bytes()) != data["source_sha256"]:
+                errors.append({"path": relative, "message": "固定来源缺失或全文哈希不一致"})
+                continue
+            catalog.append({"identities": sorted({str(value) for value in (data.get("source_id"), data.get("paper_id")) if value}),
+                            "version": str(data.get("version", "")), "source_path": data["source_path"],
+                            "source_sha256": data["source_sha256"], "manifest": relative,
+                            "manifest_sha256": manifest_hashes[relative]})
+        except (ValueError, OSError) as exc:
+            errors.append({"path": relative, "message": str(exc)})
+    return catalog, manifest_hashes, errors
+
+
+def _bind_evidence(evidence, catalog):
+    candidates = [entry for entry in catalog if evidence["source_id"] in entry["identities"]
+                  and evidence["version"] == entry["version"]]
+    if evidence.get("requested_sha256"):
+        candidates = [entry for entry in candidates if entry["source_sha256"] == evidence["requested_sha256"]]
+    hashes = {entry["source_sha256"] for entry in candidates}
+    if len(hashes) != 1:
+        raise ValueError("证据来源未唯一固定到全文哈希：" + evidence["source_id"] + " / " + evidence["version"])
+    chosen = sorted(candidates, key=lambda entry: entry["manifest"])[0]
+    links = list(WIKI.finditer(evidence["link"]))
+    if len(links) == 1:
+        link_path = links[0][1].split("|", 1)[0].split("#", 1)[0].strip()
+        if link_path != chosen["source_path"]:
+            raise ValueError(f"证据链接与固定来源不一致：{link_path} != {chosen['source_path']}")
+    elif not evidence["link"].startswith("https://"):
+        raise ValueError("证据链接须为固定附件 Wiki 或来源官方 HTTPS 链接")
+    evidence.update(source_sha256=chosen["source_sha256"], source_path=chosen["source_path"],
+                    manifests=[entry["manifest"] for entry in candidates], binding_status="fixed")
+
+
+def compile_index(root, changes=None):
+    """Compile the whole formal set, optionally with read-only proposed texts.
+
+    ``changes`` maps formal vault-relative ``*.md`` targets to complete text or
+    None (proposed deletion). It never writes overlays into the real vault.
+    """
+    root = Path(root).resolve()
+    catalog, manifests, errors = _source_catalog(root)
+    notes, objects, unregistered = {}, {}, []
+    paths = {str(path.relative_to(root)): path for path in note_paths(root)}
+    overlays = {}
+    for value, text in (changes or {}).items():
+        path = inside(root, value)
+        relative = str(path.relative_to(root))
+        if path.suffix != ".md" or relative.split("/", 1)[0] not in {"论文", "知识", "专题"}:
+            raise ValueError(f"候选只可覆盖正式三个目录的 Markdown：{value}")
+        if text is not None and not isinstance(text, str):
+            raise ValueError("候选覆盖必须为完整 Markdown 字符串或 null 删除")
+        if relative in overlays:
+            raise ValueError(f"同一候选目标有多个路径别名：{relative}")
+        overlays[relative] = text
+        if text is None:
+            paths.pop(relative, None)
+        else:
+            paths[relative] = path
+    for relative, path in sorted(paths.items()):
+        if relative in overlays:
+            full_text = overlays[relative]
+            raw = full_text.encode("utf-8")
+            frontmatter = re.match(r"\A---\r?\n.*?\r?\n---(?:\r?\n|$)", full_text, re.S)
+            body = full_text[frontmatter.end():] if frontmatter else full_text
+        else:
+            raw = path.read_bytes()
+            full_text = raw.decode("utf-8")
+            _, body = read_note(path)
+        line_offset = full_text[:len(full_text) - len(body)].count("\n")
+        records, issues = parse_note(relative, body, line_offset=line_offset)
+        errors.extend(issues)
+        notes[relative] = {"sha256": digest(raw), "registered_objects": len(records)}
+        if not records and not issues:
+            unregistered.append(relative)
+        for record in records:
+            record["note_sha256"] = digest(raw)
+            for evidence in record["evidence"]:
+                try:
+                    _bind_evidence(evidence, catalog)
+                except ValueError as exc:
+                    evidence["binding_status"] = "unresolved"
+                    errors.append({"path": relative, "line": record["line"], "message": str(exc)})
+            objects[record["key"]] = record
+    dependencies, relations = [], []
+    for key, record in objects.items():
+        refs = list(record.get("dependencies", []))
+        if record["kind"] == "relation":
+            refs += [record["source"], record["target"]]
+            relations.append({"key": key, "source": record["source"], "target": record["target"],
+                              "type": record["relation"], "attribution": record["attribution"]})
+            # A depends-on edge points from the dependent judgment to its premise.
+            if record["relation"] == "依赖" and record["attribution"] != "待核验线索":
+                dependencies.append({"dependent": record["source"], "premise": record["target"], "via": key})
+            elif record["relation"] == "证据支持" and record["attribution"] != "待核验线索":
+                dependencies.append({"dependent": record["target"], "premise": record["source"], "via": key})
+        refs += record.get("participants", []) + record.get("affected", [])
+        for ref in refs:
+            if ref not in objects:
+                errors.append({"path": record["path"], "line": record["line"],
+                               "message": f"显式语义引用未指向注册对象：{ref}；旧正文需人工选择是否注册"})
+        for ref in record.get("dependencies", []):
+            if ref in objects and objects[ref]["kind"] != "claim":
+                errors.append({"path": record["path"], "line": record["line"], "message": f"论证依赖目标须为核心命题：{ref}"})
+            dependencies.append({"dependent": key, "premise": ref, "via": key})
+    source_versions = defaultdict(set)
+    for entry in catalog:
+        for identity in entry["identities"]:
+            source_versions[f"{identity} / {entry['version']}"].add(entry["source_sha256"])
+    source_versions = {key: sorted(value) for key, value in sorted(source_versions.items())}
+    snapshot = {"notes": notes, "manifests": manifests, "sources": source_versions}
+    return {"format": FORMAT, "derived_at": utc_now(), "root": str(root), "snapshot": snapshot,
+            "snapshot_sha256": digest(json.dumps(snapshot, ensure_ascii=False, sort_keys=True)),
+            "objects": objects, "dependencies": dependencies, "relations": relations,
+            "unregistered_notes": unregistered, "errors": errors, "valid": not errors,
+            "candidate_projection": bool(changes),
+            "limits": ["只编译显式字段；未注册正文不表示缺乏科学支持。", "定位已核不表示语义支持或独立实验复现。"]}
+
+
+def stale_status(root, index):
+    actual_notes = {str(path.relative_to(root)): digest(path.read_bytes()) for path in note_paths(root)}
+    recorded = {key: value["sha256"] for key, value in index["snapshot"]["notes"].items()}
+    changed = sorted(key for key in actual_notes.keys() | recorded.keys() if actual_notes.get(key) != recorded.get(key))
+    _, manifests, source_errors = _source_catalog(root)
+    old_manifests = index["snapshot"]["manifests"]
+    changed_manifests = sorted(key for key in manifests.keys() | old_manifests.keys()
+                               if manifests.get(key) != old_manifests.get(key))
+    return {"stale": bool(changed or changed_manifests or source_errors), "changed_notes": changed,
+            "changed_manifests": changed_manifests, "source_errors": source_errors}
+
+
+def changed_objects(previous, current):
+    old = previous.get("objects", {}) if previous else {}
+    new = current.get("objects", {})
+    return {key: {"before": old.get(key, {}).get("fingerprint"), "after": new.get(key, {}).get("fingerprint")}
+            for key in old.keys() | new.keys()
+            if old.get(key, {}).get("fingerprint") != new.get(key, {}).get("fingerprint")}
+
+
+def affected_candidates(index, changed, sources=()):
+    """Cycle-safe candidates only. Actual semantic change remains a human decision."""
+    reverse = defaultdict(set)
+    for edge in index["dependencies"]:
+        reverse[edge["premise"]].add(edge["dependent"])
+    reasons = defaultdict(list)
+    initial = set(changed)
+    for key in changed:
+        reasons[key].append("注册正文或字段实际变更")
+    for key, record in index["objects"].items():
+        if any(evidence["source_id"] in sources for evidence in record.get("evidence", [])):
+            initial.add(key)
+            reasons[key].append("固定来源出现版本/内容变化：需复核定位和判断")
+    queue, visited = deque(sorted(initial)), set()
+    while queue:
+        key = queue.popleft()
+        if key in visited:
+            continue
+        visited.add(key)
+        for dependent in sorted(reverse[key]):
+            reasons[dependent].append(f"依赖变更对象：{key}")
+            if dependent not in visited:
+                queue.append(dependent)
+    return [{"key": key, "status": "待处理", "reasons": list(dict.fromkeys(reasons[key])),
+             "note_sha256": index["objects"].get(key, {}).get("note_sha256")}
+            for key in sorted(visited)]
+
+
+def build(root):
+    target = inside(root, INDEX_PATH)
+    with locked(root, "semantic-index"):
+        previous = read_json(target) if target.exists() else None
+        current = compile_index(root)
+        changes = changed_objects(previous, current) if previous else {}
+        old_sources = previous.get("snapshot", {}).get("sources", {}) if previous else {}
+        new_sources = current["snapshot"]["sources"]
+        changed_source_keys = sorted(key for key in old_sources.keys() | new_sources.keys()
+                                     if old_sources.get(key) != new_sources.get(key)) if previous else []
+        changed_sources = sorted({key.rsplit(" / ", 1)[0] for key in changed_source_keys})
+        # Preserve previously explicit dependencies when an object is removed.
+        impact_index = dict(current)
+        if previous:
+            impact_index["dependencies"] = current["dependencies"] + previous.get("dependencies", [])
+        candidates = affected_candidates(impact_index, changes, changed_sources)
+        change = {"format": "paper-semantic-impact-v1", "created_at": utc_now(),
+                  "previous_snapshot": previous.get("snapshot_sha256") if previous else None,
+                  "current_snapshot": current["snapshot_sha256"], "changed_objects": changes,
+                  "candidates": candidates, "source_changes": changed_sources,
+                  "source_version_changes": changed_source_keys,
+                  "note": "文本差异只生成复核候选，未自动更改科学裁决。"}
+        if changes or changed_sources:
+            event_id = digest(json.dumps({"before": change["previous_snapshot"], "after": change["current_snapshot"]}, sort_keys=True))[:24]
+            event = inside(root, f".research/updates/semantic-impact/{event_id}.json")
+            if not event.exists():
+                write_json(event, change)
+            change["event_path"] = str(event.relative_to(root))
+        write_json(target, current)
+    return {"index": str(target.relative_to(root)), "valid": current["valid"],
+            "objects": len(current["objects"]), "unregistered_notes": len(current["unregistered_notes"]),
+            "errors": current["errors"], "change": change}
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(prog="research.py derive", description=__doc__)
+    sub = parser.add_subparsers(dest="command", required=True)
+    for name in ("build", "status", "impact", "resolve"):
+        command = sub.add_parser(name)
+        command.add_argument("--root", type=Path, default=default_root())
+        if name == "impact":
+            command.add_argument("--since", help="旧派生索引的库根相对路径；比较实际对象变化")
+            command.add_argument("--source", action="append", default=[], help="出现新版本的固定来源 ID；只标需复核")
+            command.add_argument("--event", required=True, type=safe_id)
+        if name == "resolve":
+            command.add_argument("--event", required=True, type=safe_id)
+            command.add_argument("--target", required=True)
+            command.add_argument("--decision", required=True, choices=("已核", "需修订", "不变", "待处理"))
+            command.add_argument("--reason", required=True)
+            command.add_argument("--evidence", action="append", default=[])
+    args = parser.parse_args(argv)
+    root = args.root.resolve()
+    if args.command == "build":
+        result = build(root)
+    elif args.command == "status":
+        target = inside(root, INDEX_PATH)
+        if not target.exists():
+            result = {"exists": False, "stale": True, "next": "derive build"}
+        else:
+            index = read_json(target)
+            result = {"exists": True, "valid": index["valid"], **stale_status(root, index)}
+    elif args.command == "impact":
+        target = inside(root, INDEX_PATH)
+        index = read_json(target)
+        if stale_status(root, index)["stale"] or not index["valid"]:
+            raise ValueError("索引已失效或有注册错误；先 derive build 并处理定位错误")
+        previous = read_json(inside(root, args.since)) if args.since else None
+        changes = changed_objects(previous, index) if previous else {}
+        if not changes and not args.source:
+            raise ValueError("未给出实际对象变化或新版本来源，不创建空更新事件")
+        impact_index = dict(index)
+        if previous:
+            impact_index["dependencies"] = index["dependencies"] + previous.get("dependencies", [])
+        event = {"format": "paper-semantic-impact-v1", "created_at": utc_now(), "event_id": args.event,
+                 "previous_snapshot": previous.get("snapshot_sha256") if previous else None,
+                 "current_snapshot": index["snapshot_sha256"], "changed_objects": changes,
+                 "source_changes": args.source, "candidates": affected_candidates(impact_index, changes, args.source),
+                 "note": "候选状态仅描述处理进度；不能自动覆盖 Markdown 或宣布旧命题为假。"}
+        path = inside(root, f".research/updates/semantic-impact/{args.event}.json")
+        with locked(root, f"semantic-impact:{args.event}"):
+            if path.exists():
+                existing = read_json(path)
+                if existing["current_snapshot"] != event["current_snapshot"] or existing["source_changes"] != event["source_changes"]:
+                    raise ValueError("同事件 ID 已绑定其他变化；使用新 ID")
+                event = existing
+            else:
+                write_json(path, event)
+        result = {"event": str(path.relative_to(root)), **event}
+    else:
+        path = inside(root, f".research/updates/semantic-impact/{args.event}.json")
+        with locked(root, f"semantic-impact:{args.event}"):
+            event = read_json(path)
+            candidate = next((item for item in event["candidates"] if item["key"] == args.target), None)
+            if not candidate:
+                raise ValueError("目标不在此事件的真实影响候选中")
+            note = inside(root, args.target.split("#^", 1)[0])
+            current_hash = digest(note.read_bytes()) if note.exists() else None
+            if candidate.get("note_sha256") != current_hash:
+                raise ValueError("候选正文已改变；重建索引并为实际新版本建立事件后复核")
+            decision = {"at": utc_now(), "decision": args.decision, "reason": args.reason,
+                        "evidence": args.evidence, "note_sha256": current_hash}
+            candidate.setdefault("history", []).append(decision)
+            candidate.update(status=args.decision, resolution=decision)
+            write_json(path, event)
+        result = {"event": str(path.relative_to(root)), "candidate": candidate,
+                  "next": "科学判断需要按正常审阅更新 Markdown；处理记录不会代替正文。"}
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 1 if result.get("valid") is False else 0

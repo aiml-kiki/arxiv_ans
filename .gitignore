@@ -1,0 +1,15 @@
+# Machine-local settings and derived/private data
+.DS_Store
+**/.DS_Store
+**/__pycache__/
+.venv/
+审阅/
+.obsidian/
+.research/
+附件/
+论文/
+知识/
+专题/
+.claude/*
+!.claude/skills/
+*.sqlite*

@@ -1,0 +1,6 @@
+interface:
+  display_name: "paper-knowledge · 知识沉淀"
+  short_description: "语义查重、独立解释、判断与依赖更新，确有增量才改"
+  default_prompt: "使用 $paper-knowledge 从已接受的研究结果检查可迁移知识与现有判断影响，给真实增量或不变依据，保留用户原话并形成一组可审阅候选。"
+policy:
+  allow_implicit_invocation: false

@@ -1,0 +1,6 @@
+interface:
+  display_name: "paper-read · 三遍精读"
+  short_description: "同一阅读者分轮理解机制、核证据、虚拟重构并成文"
+  default_prompt: "使用 $paper-read 对固定版本论文进行真实分轮三遍阅读，每轮交回协调者核验后续派，最终解释完整机制、关键细节与证据边界。"
+policy:
+  allow_implicit_invocation: false

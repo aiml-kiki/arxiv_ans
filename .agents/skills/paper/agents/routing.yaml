@@ -1,0 +1,63 @@
+# 偏好不是调用事实；宿主工具、实际可用模型及实际事件是执行记录依据。
+schema_version: 2
+allow_implicit_invocation: false
+max_workers: 2
+max_depth: 1
+fork_history: none
+script_dispatches_agents: false
+profiles:
+  locate: {model: gpt-6-luna, reasoning_effort: low}
+  audit: {model: gpt-6-luna, reasoning_effort: medium}
+  organize: {model: gpt-6-luna, reasoning_effort: high}
+  explain: {model: gpt-6-sol, reasoning_effort: low}
+  maintain: {model: gpt-6-sol, reasoning_effort: medium}
+  bounded_compare: {model: gpt-6-sol, reasoning_effort: medium}
+  deep_read: {model: gpt-6-sol, reasoning_effort: high}
+  deep_compare: {model: gpt-6-sol, reasoning_effort: high}
+  trace: {model: gpt-6-sol, reasoning_effort: high}
+  critic: {model: gpt-6-sol, reasoning_effort: high}
+dispatch:
+  independent_multiple_papers: one_reader_per_paper_in_batches
+  single_paper: delegate_when_context_or_reasoning_isolation_helps
+  current_round_only: true
+  same_reader_actual_followups: true
+  followup_after_coordinator_acceptance: true
+  replacement_requires_reason_and_handover: true
+  main_fallback_requires_concrete_reason: true
+  exceptions: [user_single_agent, delegation_prohibited, agent_tool_unavailable, quota_failure, dependency, disproportionate_handoff_cost]
+  actual_fields: [observed, mode, agent_id, tool, call_id, actual_record, requested_model, requested_effort, actual_model, actual_effort]
+rounds:
+  read: [R1, R2a, R2b, R2c, R3a, R3b, R4]
+  compare: [M1, M2, M3, M4]
+  trace: [T0, T1, T2, T3, T4, T5, T6]
+  knowledge: [K1, K2, K3, K4]
+context:
+  first_dispatch: active_skill_and_current_round
+  later_dispatch: current_guide_accepted_interfaces_actual_sources_user_corrections
+  composition_only: one_template_and_obsidian_rules
+  do_not_load: [all_48_tasks, future_round_guides, full_parent_history, maintenance_design]
+  fresh_instruction_tokens_soft_target: [1000, 2000]
+  source_budget: actual_scientific_need_not_instruction_target
+  missing_token_telemetry: null
+model_resolution:
+  source_of_truth: runtime_tool_capabilities
+  reader_initial_profile: full_task_need
+  preserve_instance_if_followup_cannot_change_model: true
+  root_model_is_not_changed_by_yaml: true
+  unavailable_preference: map_by_capability_or_record_main_fallback
+  quota_failure: save_checkpoint_and_retry_when_authorized_or_available
+  never_create_agents_to_evade_limits: true
+concurrency:
+  limit_applies_to_all_active_agent_roles: true
+  independent_source_io: bounded_async_or_threads
+  independent_pdf_parsing: bounded_process_pool_when_needed
+  shared_workflow_and_publication: one_coordinator_writer
+  shared_knowledge_update: sequential_integration
+  cache_hit: no_parser_process
+review:
+  ordinary_omission: same_author_targeted_revision
+  hard_local_gap: bounded_independent_audit_when_useful
+  repeated_semantic_error: inspect_packet_sources_acceptance_and_retention_before_more_prompt
+  script_semantics: not_scientifically_verified
+  default_user_interaction: complete_candidate_group
+  guided_reading: stop_at_pass_boundary_and_discuss

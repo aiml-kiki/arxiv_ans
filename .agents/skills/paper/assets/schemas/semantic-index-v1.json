@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paper-semantic-index-v1",
+  "title": "Rebuildable index of explicitly registered formal Markdown research objects",
+  "type": "object",
+  "required": ["format", "derived_at", "root", "snapshot", "snapshot_sha256", "objects", "dependencies", "relations", "unregistered_notes", "errors", "valid"],
+  "properties": {
+    "format": {"const": "paper-semantic-v1"},
+    "derived_at": {"type": "string"},
+    "root": {"type": "string"},
+    "snapshot_sha256": {"$ref": "#/$defs/hash"},
+    "snapshot": {
+      "type": "object",
+      "required": ["notes", "manifests", "sources"],
+      "properties": {
+        "notes": {"type": "object", "additionalProperties": {"type": "object", "required": ["sha256", "registered_objects"], "properties": {"sha256": {"$ref": "#/$defs/hash"}, "registered_objects": {"type": "integer", "minimum": 0}}}},
+        "manifests": {"type": "object", "additionalProperties": {"$ref": "#/$defs/hash"}},
+        "sources": {"type": "object", "additionalProperties": {"type": "array", "items": {"$ref": "#/$defs/hash"}}}
+      }
+    },
+    "objects": {"type": "object", "additionalProperties": {"$ref": "#/$defs/object"}},
+    "dependencies": {"type": "array", "items": {"type": "object", "required": ["dependent", "premise", "via"], "properties": {"dependent": {"type": "string"}, "premise": {"type": "string"}, "via": {"type": "string"}}}},
+    "relations": {"type": "array", "items": {"type": "object", "required": ["key", "source", "target", "type", "attribution"], "properties": {"type": {"$ref": "#/$defs/relationType"}, "attribution": {"$ref": "#/$defs/attribution"}}}},
+    "unregistered_notes": {"type": "array", "items": {"type": "string"}},
+    "errors": {"type": "array", "items": {"type": "object", "required": ["path", "message"], "properties": {"path": {"type": "string"}, "line": {"type": "integer", "minimum": 1}, "message": {"type": "string"}}}},
+    "valid": {"type": "boolean"},
+    "limits": {"type": "array", "items": {"type": "string"}}
+  },
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "relationType": {"enum": ["导航", "前置", "实例", "证据支持", "依赖", "限制", "反例", "引用", "承继", "替代", "分叉", "组合"]},
+    "attribution": {"enum": ["作者明说", "分析者推断", "待核验线索"]},
+    "evidence": {
+      "type": "object",
+      "required": ["relation", "source_id", "version", "location", "verification", "link", "rationale", "binding_status"],
+      "properties": {
+        "relation": {"enum": ["支持", "限制", "反驳", "背景"]},
+        "source_id": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1},
+        "location": {"type": "string", "minLength": 1},
+        "verification": {"enum": ["定位已核", "未核"]},
+        "link": {"type": "string", "minLength": 1},
+        "rationale": {"type": "string", "minLength": 1},
+        "requested_sha256": {"anyOf": [{"$ref": "#/$defs/hash"}, {"type": "null"}]},
+        "source_sha256": {"$ref": "#/$defs/hash"},
+        "source_path": {"type": "string"},
+        "manifests": {"type": "array", "items": {"type": "string"}},
+        "binding_status": {"enum": ["fixed", "unresolved"]}
+      }
+    },
+    "object": {
+      "type": "object",
+      "required": ["key", "id", "path", "line", "kind", "text", "fields", "evidence", "dependencies", "fingerprint", "note_sha256"],
+      "properties": {
+        "key": {"type": "string"},
+        "id": {"type": "string", "pattern": "^[A-Za-z0-9-]+$"},
+        "path": {"type": "string", "pattern": "^(论文|知识|专题)/.*\\.md$"},
+        "line": {"type": "integer", "minimum": 1},
+        "kind": {"enum": ["claim", "relation", "question", "delta"]},
+        "text": {"type": "string", "minLength": 1},
+        "fields": {"type": "object", "additionalProperties": {"type": "array", "items": {"type": "string"}}},
+        "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}},
+        "dependencies": {"type": "array", "items": {"type": "string"}},
+        "fingerprint": {"$ref": "#/$defs/hash"},
+        "note_sha256": {"$ref": "#/$defs/hash"}
+      },
+      "allOf": [
+        {"if": {"properties": {"kind": {"const": "claim"}}}, "then": {"required": ["claim_type", "scope", "proponent", "verdict", "rationale"], "properties": {"claim_type": {"enum": ["机制", "经验结果", "理论", "实现", "跨篇选择", "假设"]}, "proponent": {"enum": ["作者", "分析者"]}, "verdict": {"enum": ["支持", "有条件支持", "证据不足", "相反证据", "原文未知"]}, "evidence": {"minItems": 1}}}},
+        {"if": {"properties": {"kind": {"const": "relation"}}}, "then": {"required": ["source", "target", "relation", "attribution", "scope"], "properties": {"relation": {"$ref": "#/$defs/relationType"}, "attribution": {"$ref": "#/$defs/attribution"}}}},
+        {"if": {"properties": {"kind": {"const": "question"}}}, "then": {"required": ["status", "scope", "participants", "competing_explanations", "distinguishing_observation", "progress"], "properties": {"status": {"enum": ["未解", "已解决", "已澄清为不同条件", "暂缓"]}, "participants": {"type": "array", "minItems": 1, "items": {"type": "string"}}}}},
+        {"if": {"properties": {"kind": {"const": "delta"}}}, "then": {"required": ["delta_type", "before", "after", "decision", "affected"], "properties": {"delta_type": {"enum": ["新建", "补充实例", "澄清条件", "修正判断", "拆分", "合并", "留在论文", "待核验", "不变"]}}}}
+      ]
+    }
+  }
+}

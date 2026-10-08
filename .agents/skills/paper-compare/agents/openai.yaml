@@ -1,0 +1,6 @@
+interface:
+  display_name: "paper-compare · 技术对比"
+  short_description: "在共同坐标下解释机制、演变、证据和条件选择"
+  default_prompt: "使用 $paper-compare 对给定论文真实分轮比较，核对同情境机制及双端技术关系，再根据可比证据给条件选择与反转条件。"
+policy:
+  allow_implicit_invocation: false

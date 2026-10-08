@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paper-query-screen-v1",
+  "title": "Explicit screening and verified report/work/study identity decisions",
+  "type": "object",
+  "required": ["decisions"],
+  "properties": {
+    "decisions": {"type": "array", "items": {
+      "type": "object",
+      "required": ["status", "reason"],
+      "anyOf": [{"required": ["record_id"]}, {"required": ["report_id"]}],
+      "properties": {
+        "record_id": {"type": "string", "minLength": 1}, "report_id": {"type": "string", "minLength": 1},
+        "status": {"enum": ["纳入", "排除", "待判断"]}, "reason": {"type": "string", "minLength": 1},
+        "work_id": {"type": "string", "minLength": 1}, "report_id_override": {"type": "string", "minLength": 1},
+        "study_id": {"type": "string", "minLength": 1}, "identity_reason": {"type": "string", "minLength": 1}
+      },
+      "allOf": [{"if": {"anyOf": [{"required": ["work_id"]}, {"required": ["report_id_override"]}, {"required": ["study_id"]}]}, "then": {"required": ["identity_reason"]}}]
+    }}
+  }
+}

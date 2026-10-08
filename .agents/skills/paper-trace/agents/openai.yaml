@@ -1,0 +1,6 @@
+interface:
+  display_name: "paper-trace · 研究追溯"
+  short_description: "真实检索和筛选、引用与技术谱系、范围和增量专题"
+  default_prompt: "使用 $paper-trace 围绕焦点问题按实际范围追溯研究，保存真实查询与选择依据，分开引用事实和技术关系，给覆盖限制与后续选读目的。"
+policy:
+  allow_implicit_invocation: false

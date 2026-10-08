@@ -1,0 +1,6 @@
+interface:
+  display_name: "paper · 论文研究"
+  short_description: "分轮精读、技术对比、研究追溯与知识沉淀，适配 Obsidian"
+  default_prompt: "使用 $paper 处理当前论文研究目标，按当前轮渐进加载、实际委派和核验；完成科学工作后检查知识影响，交付可审阅正文。"
+policy:
+  allow_implicit_invocation: false

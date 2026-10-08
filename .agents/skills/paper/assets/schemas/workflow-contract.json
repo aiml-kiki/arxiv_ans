@@ -1,0 +1,90 @@
+{
+  "schema_version": 2,
+  "description": "工作流CLI数据契约与占位示例；不是科学验证器。执行前将所有示例路径/ID换成真实记录。",
+  "entry": "uv run python .agents/skills/paper/scripts/research.py --root <vault> workflow <command>",
+  "state": ".research/work/<run>/workflow.json",
+  "archived_state": ".research/records/runs/<run>/workflow.json",
+  "archived_commands": "归档状态存在时仅status/recovery可只读查看（即使清理中断留有work也优先归档状态）；其他操作及init拒绝，不重建work。archive.json的cleanup status单独报告，不把归档当作新增科学验证。",
+  "round_artifact": ".research/work/<run>/units/<unit>/results/<stage>.md",
+  "exclusive_candidate_dir": ".research/drafts/<run>/units/<unit>/",
+  "commands": {
+    "init": "--run <id> --plan <root-contained-json>",
+    "next": "--run <id> --unit <id>",
+    "status": "--run <id>",
+    "recovery": "--run <id> [--unit <id>]",
+    "dispatch": "--run <id> --unit <id> --event <root-contained-json>",
+    "submit": "--run <id> --unit <id> --result <root-contained-json>",
+    "accept": "--run <id> --unit <id> --finding <root-contained-json>",
+    "revise": "--run <id> --unit <id> --finding <root-contained-json>",
+    "reopen": "--run <id> --unit <id> --stage <id> --reason <specific reason>",
+    "tasks": "--run <id> --unit <id> --decisions <root-contained-json>",
+    "repeat": "--run <id> --unit <id> --stage <accepted stage> --reason <next scientific batch>",
+    "inputs": "--run <id> --unit <id> --files <root-contained-json-list> --reason <source change> [--stage <earliest affected stage>]",
+    "windows": "--run <id> --unit <id> --stage <id> --locations <root-contained-json-list>",
+    "constraints": "--run <id> --update <root-contained-json> [--affected <unit:stage>]",
+    "interrupt": "--run <id> --unit <id> --reason <actual host interruption>",
+    "candidates": "--run <id> [--finding <concrete group-integration finding>]"
+  },
+  "plan": {
+    "required": ["goal", "units"],
+    "unit_required": ["id", "kind"],
+    "kinds": ["read", "compare", "trace", "knowledge"],
+    "read_inputs": "至少一个真实 source manifest；自动核并冻结其source_path文件和逐块内容哈希。PDF的page_count为实际正整数；HTML/text须source_kind明确、page_count:0及实际section_count，块用section和block_id定位，不假造PDF页。",
+    "dependencies": "字符串单元ID表示依赖全部完成；{unit,stage}表示依赖该已接受轮及之前产物。执行DAG不得有环。",
+    "task_decisions": "{leaf_id:{status:selected|not_applicable|pending,reason:具体依据}}。B4/B5默认pending；在R2b前根据论文实际主张选择。",
+    "conditional_routes": "trace默认跳过T0：无上次研究集合；incremental:true启用T0。compose_topic:false须具体no_topic_reason。",
+    "example": {
+      "goal": "精读固定版本论文并形成知识增量候选",
+      "max_workers": 2,
+      "constraints": [],
+      "units": [{
+        "id": "paper-example-v1",
+        "kind": "read",
+        "inputs": [".research/sources/<paper-id>/<source-hash>/<parser-key>.json"],
+        "target": "论文/<真实文件名>.md",
+        "source_windows": {"R1": [{"locator": "摘要、引言、结论与关键图", "question": "任务及贡献声称"}]},
+        "task_decisions": {
+          "B4": {"status": "selected", "reason": "原文第X节描述训练样本、目标及更新"},
+          "B5": {"status": "not_applicable", "reason": "固定版本只提出经验方法，没有需要复原的理论构造/证明主张"}
+        }
+      }]
+    }
+  },
+  "dispatch": {
+    "required": ["observed", "mode", "agent_id", "tool"],
+    "observed": "必须true，只登记真实发生的宿主执行，路由偏好不能提交。",
+    "call_id": "宿主暴露时填真实值；未暴露可null并提供actual_record可核对文字/定位，不虚构。",
+    "mode": "首次spawn；已有同代理followup；主会话main须fallback_reason。",
+    "replacement": "更换物理执行者必须replacement_reason及handover_record，保留逻辑任务和真实ID变化。",
+    "capacity": "next先提供容量；若宿主已发生超额调用，dispatch如实记录违规并阻止submit，协调者须真实中断超额执行再登记interrupt。脚本不调用或中断宿主。",
+    "example": {"observed": true, "mode": "spawn", "agent_id": "<actual-host-agent-id>", "tool": "collaboration.spawn_agent", "call_id": null, "actual_record": "<真实工具结果及可回查消息位置>", "requested_model": null, "requested_effort": null, "actual_model": null, "actual_effort": null}
+  },
+  "result": {
+    "required": ["stage", "answers", "evidence", "coverage", "judgment_changes", "critical_details", "gaps"],
+    "artifact": "必须在当前轮指定的Markdown路径实际写入，submit固定完整内容哈希。",
+    "answers": "非空，包含question/answer/task_ids；须覆盖当前适用叶任务且不能混入未来叶任务。内容保存科学答案与依据，不保存隐含CoT。",
+    "evidence": "非空，path/locator指向当前已固定来源、已接受产物或依赖来源；不自动判断语义支持。",
+    "coverage": "非空，每项path/locator/mode(read|image_checked|not_covered)；未覆盖须reason。PDF可用实际page/block_id；HTML/text不得填page，可用section(解析段整数编号)/block_id核固定manifest，原文节标题写locator。页或段与block_id必须一致。",
+    "judgment_changes": "列表；无变化为空。",
+    "critical_details": "列表，主要接口/数值/作用/正文保留点；暂无内容可空，验收者决定是否真正缺项。",
+    "gaps": "列表，未知及后果；无缺口可空。",
+    "composition": "最后轮须candidates:[{draft,target}]；draft必须本单元独占候选区，target须论文/知识/专题路径。knowledge确无增量可candidates:[]并具体no_change_reason。",
+    "example": {
+      "stage": "R1",
+      "answers": [{"task_ids": ["B1"], "question": "论文的问题、约束、声称及下一遍疑问是什么？", "answer": "<实际科学结果；作者声称与当前证据分开>"}],
+      "evidence": [{"path": "<已固定来源路径>", "locator": "摘要和第1节", "role": "author_claim"}],
+      "coverage": [{"path": "<已固定来源路径>", "locator": "第1节", "page": 1, "mode": "read"}],
+      "judgment_changes": [], "critical_details": [], "gaps": []
+    }
+  },
+  "finding": {
+    "required": ["reviewer", "summary", "checks"],
+    "checks": "非空，每项question/finding/locator为具体核验问题、发现及产物/来源位置。",
+    "revision": "revise另须非空required_changes列表；科学缺项定向回流。",
+    "example": {"reviewer": "<实际协调者>", "summary": "<具体接受/返工依据>", "checks": [{"question": "是否将声称误写成已验证？", "finding": "<原文与阶段结果核对后的实际发现>", "locator": "<来源节及结果段>"}]},
+    "limitation": "脚本核顺序、字段、路径及哈希；无法证明实际读过或完成独立科学评审，不能因为通过字段检查就称科学已验证。"
+  },
+  "user_update": {"kind": "constraint|correction|goal|authorization", "text": "用户真实输入", "evidence": "可选原消息定位"},
+  "publication": "candidates仅输出哈希绑定映射，交review/publish形成可见待审组及冲突保护。脚本状态与授权字段不能代替人类实际授权。",
+  "multi_round": "每轮submit→协调者accept后才能真实续派下一轮；三遍至少有实际交回边界，同阅读者不等于同一调用一次输出全部。"
+}
