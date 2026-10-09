@@ -537,6 +537,9 @@ def next_packet(root: Path, state: dict, ident: str, detail: str = "compact") ->
             "entry_on_physical_replacement": capability_entry,
             "entry_policy": "首次或实际物理替代才加载入口，同代理续派只加载当前指南/协议片段",
             "guides": refs, "protocols": rules, "templates": templates,
+            "preflight_before_begin": {"register_new_inputs_first": True,
+                "composition": composition,
+                "instruction": "先读当前指南所需小节，新增材料用inputs登记（保留原固定来源）；核对fixed_inputs再begin。成文旧页/冻结对照也遵守此顺序；已executing不能中途改输入。"},
             "resource_command": "workflow resource --run <run> --unit <unit> --kind guide|protocol|template --index <0-based> [--section <heading>]",
             "template_refs": [{"path": path, "sha256": digest(Path(path).read_bytes())} for path in templates],
             "fixed_inputs": [{**item, "absolute_path": str(inside(root, item["path"]))} for item in unit["inputs"]],
@@ -976,6 +979,26 @@ def submit(root: Path, state: dict, ident: str, result: dict) -> dict:
             if path.suffix != ".md" or not path.is_relative_to(inside(root, unit["draft_dir"])):
                 raise ValueError("成文产物须在本单位独占draft_dir内，不能由代理写正式页")
             target = validate_target(root, value["target"])
+            from .notes import validate_note_frontmatter, block_anchors, table_render_issues
+            from .semantics import parse_note
+            content = path.read_text(encoding="utf-8")
+            meta = validate_note_frontmatter(content, target)
+            expected_kinds = ({"paper"} if target.startswith("论文/") else
+                              {"knowledge"} if target.startswith("知识/") else {"comparison", "topic"})
+            if meta.get("kind") not in expected_kinds:
+                raise ValueError("候选kind与正式目标/本单元类型不一致: " + target)
+            if meta.get("review_status") or meta.get("analysis") in {"draft", "pending", "待审", "草稿"}:
+                raise ValueError("正式候选正文不能携带待审投影状态: " + target)
+            front = re.match(r"\A---\r?\n.*?\r?\n---(?:\r?\n|$)", content, re.S)
+            body = content[front.end():]
+            anchors, layout_errors = block_anchors(body)
+            _, contract_errors = parse_note(target, body, line_offset=content[:front.end()].count("\n"))
+            if len(anchors) != len(set(anchors)):
+                layout_errors.append("块ID重复")
+            layout_errors += table_render_issues(body)
+            if layout_errors or contract_errors:
+                raise ValueError("候选本地字段/排版契约未通过（不等于科学核验）: " + json.dumps(
+                    {"target": target, "layout": layout_errors, "fields": contract_errors}, ensure_ascii=False))
             candidates.append({"draft": draft["path"], "target": target, "sha256": draft["sha256"]})
             files.append(preserved_version(root, state["run_id"], ident, stage["id"], draft, f"candidate-{len(candidates)}"))
             files.append(draft)

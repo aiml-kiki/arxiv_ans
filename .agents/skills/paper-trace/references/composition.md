@@ -1,5 +1,7 @@
 # T6 · 开放问题的 topic 候选
 
+**开始前预检：** 保持本轮 ready/revision_required；先确认需要的旧页、冻结对照、知识/接受产物是否已在 fixed_inputs 或 accepted 中。新增材料用 `workflow inputs --stage <本轮> --files …` 登记，文件列表保留已有固定来源；重新取 next 核对后才 begin。不要先 begin 再登记，也不要提前读取未登记旧稿。已执行中才发现缺输入时停止并真实中断/恢复，不绕过状态保护。
+
 本轮 C9；若出现未分析跨来源判断，先请求必要 C1–C8 当前任务。加载接受研究地图/覆盖、有关知识与比较、[topic 模板](../assets/topic.md)、[写作](../../paper/references/writing.md)及 [Obsidian](../../paper/references/obsidian.md)。
 
 焦点答案与限制→范围/覆盖→必要概念与选读→路线谱系→综合证据/取舍→未解问题/研究机会→讨论/增量。路线讲关键接口及瓶颈，核心判断有来源和范围；已有深入比较页总结并回链，不复制整篇。

@@ -4,10 +4,10 @@
 
 ## 分轮循环
 
-1. 使用 `workflow next --run … --unit …` 简包。首次先确认 owner 已绑定本人真实 ID；尚未登记时有限等待并重取简包，不提前 step 或向父会话索取下一阶段。只读当前指南的指定小节及必要来源；用 `workflow resource --kind guide|protocol|template --index N` 提取当前资料。模板仅成文阶段允许。
+1. 使用 `workflow next --run … --unit …` 简包。首次先确认 owner 已绑定本人真实 ID；尚未登记时有限等待并重取简包，不提前 step 或向父会话索取下一阶段。只读当前指南的指定小节及必要来源；当前轮若需新增材料，先用 `workflow inputs --stage <当前轮> --files …` 登记（列表保留原固定来源），确认新简包的 fixed_inputs 后再 begin。尤其成文所需的旧正式页、冻结对照和知识资料，必须先登记再读取/开始；不能执行到一半再改输入。用 `workflow resource --kind guide|protocol|template --index N` 提取当前资料。模板仅成文阶段允许。
 2. `start-owner` 已将首轮设为 executing，直接完成该轮，不重复 begin。后续处于 ready/revision_required 的轮次，用 `workflow step --agent-id <本人真实ID> --operation begin` 记录内部开始；所有 step 操作都传本人真实 ID。它是 internal checkpoint，不是宿主 spawn/followup；依赖/上一轮尚未接受时不能推进。
 3. 完成当前阶段科学任务、落盘阶段 Markdown 和 result JSON。先保存第一遍问题/疑问，再读取第二遍指南；第二遍机制、学习/证明、证据完成后，第三遍从它们构造替代与作者辩护。不得在初始长 prompt 中同时要求三遍成品。
-4. `step --operation submit --payload <result.json>` 固定产物；回查影响结论的来源/接口/负面结果，给具体 finding 后 `step --operation accept|revise --payload <finding.json>`。自查填 `review_kind: self_check`；确有另一执行者复核才填 `independent_review`，并给其实际 ID/记录。owner 自查不是独立科学评审。
+4. `step --operation submit --payload <result.json>` 固定产物；成文提交先自动检查本地属性/注册枚举/块ID/表格语法，失败就在当前轮修正，不能跳过或称为已接受。该检查不替代成组入链及科学核验。回查影响结论的来源/接口/负面结果，给具体 finding 后 `step --operation accept|revise --payload <finding.json>`。自查填 `review_kind: self_check`；确有另一执行者复核才填 `independent_review`，并给其实际 ID/记录。owner 自查不是独立科学评审。
 5. 仅接受后取下一轮小包，直到最终候选。内部多阶段可以在同一代理会话连续运行；每阶段以保存→核对→登记→再加载构成真实边界，不声称产生了未发生的宿主多轮调用。需要换任务档位的局部工作按路由委派，不把所有叶任务拆成代理。
 
 发现机械字段错误就修结构；机制或证据缺项就回到相关来源和阶段，不能把未知猜成参数。局部争议无法解决时保留科学未知；只有影响任务能否完成的异常才打扰父会话。用户带读用 interactive 模式按遍停止交流。

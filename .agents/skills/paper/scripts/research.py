@@ -57,8 +57,16 @@ def main(argv=None):
             from lib.core import read_json
             command = argparse.ArgumentParser(prog='research.py check')
             command.add_argument('--changes', type=Path)
+            command.add_argument('--detail', choices=('compact', 'full'), default='compact')
             options = command.parse_args(remaining)
             value = check_changes(root, read_json(root / options.changes)) if options.changes else check(root)
+            if options.detail == 'compact':
+                for field in ('issues', 'historical_issues'):
+                    items = value.get(field, [])
+                    if len(items) > 8:
+                        value[field + '_count'] = len(items)
+                        value[field] = items[:8]
+                        value['detail_policy'] = '默认最多8项样例；完整问题用check --detail full，按定位定向核对。'
         elif args.command == 'publish':
             from lib.publishing import publish
             command = argparse.ArgumentParser(prog='research.py publish')

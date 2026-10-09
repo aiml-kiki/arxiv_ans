@@ -1,5 +1,7 @@
 # M4 · 连贯 comparison 候选
 
+**开始前预检：** 保持本轮 ready/revision_required；先确认需要的旧页、冻结对照、知识/接受产物是否已在 fixed_inputs 或 accepted 中。新增材料用 `workflow inputs --stage <本轮> --files …` 登记，文件列表保留已有固定来源；重新取 next 核对后才 begin。不要先 begin 再登记，也不要提前读取未登记旧稿。已执行中才发现缺输入时停止并真实中断/恢复，不绕过状态保护。
+
 本轮 C9。加载接受的 M1–M3、旧正式页相关段落、[comparison 模板](../assets/comparison.md)、[共用写作](../../paper/references/writing.md)及 [Obsidian](../../paper/references/obsidian.md)。
 
 先给最重要的机制关系及有条件答案，再共同坐标→同情境→演变/分叉→证据/争议→选择/反转→讨论。各段职责不同，不能换标题重复列优缺点。技术关系给双端定位和判断层次，代表成绩保留协议/预算与统计限制，必要参数说明作用。

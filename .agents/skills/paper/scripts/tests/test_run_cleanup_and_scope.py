@@ -96,5 +96,37 @@ class InterruptedCleanup(unittest.TestCase):
                 finish(root, "unknown", abandon_reason="restart")
 
 
+class CandidatePreflight(unittest.TestCase):
+    def test_composition_packet_and_local_candidate_gate(self):
+        from lib.workflow import initialize, next_packet, submit
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td).resolve(); (root / "baseline.md").write_text("fixed input")
+            state = initialize(root, "probe", {"goal": "fixture", "autonomy": "unit", "units": [
+                {"id": "k", "kind": "knowledge", "inputs": ["baseline.md"],
+                 "target": "知识/A.md", "goal": "fixture"}]})
+            unit = state["units"]["k"]
+            for stage in unit["rounds"][:-1]:
+                stage["status"] = "skipped"
+            unit["owner"] = {"mode": "agent", "agent_id": "/fixture"}
+            unit["owner_active"] = True
+            self.assertTrue(next_packet(root, state, "k")["preflight_before_begin"]["composition"])
+            stage = unit["rounds"][-1]
+            stage.update(status="executing", executions=[{"at": "2026-10-09T00:00:00", "agent_id": "/fixture"}])
+            artifact = root / unit["output_dir"] / "K4.md"
+            artifact.parent.mkdir(parents=True, exist_ok=True); artifact.write_text("Composition fixture")
+            draft = root / unit["draft"]; draft.parent.mkdir(parents=True, exist_ok=True)
+            draft.write_text(note("a", "Claim. ^c-a\n\n**研究对象：** free description"))
+            result = {"stage": "K4", "agent_id": "/fixture",
+                      "answers": [{"question": "fixture", "answer": "fixture", "task_ids": ["E7"]}],
+                      "evidence": [{"path": "baseline.md", "locator": "line1"}],
+                      "coverage": [{"path": "baseline.md", "locator": "line1", "mode": "read"}],
+                      "judgment_changes": [], "critical_details": [], "gaps": []}
+            with self.assertRaisesRegex(ValueError, "研究对象未知"):
+                submit(root, state, "k", result)
+            self.assertEqual(stage["status"], "executing")
+            draft.write_text(note("a", "A valid unregistered explanation. ^c-a"))
+            self.assertEqual(submit(root, state, "k", result)["status"], "awaiting_owner_local_review")
+
+
 if __name__ == "__main__":
     unittest.main()

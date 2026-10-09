@@ -1,5 +1,7 @@
 # K4 · 一组有依据的更新候选
 
+**开始前预检：** 保持本轮 ready/revision_required；先确认需要的旧页、冻结对照、知识/接受产物是否已在 fixed_inputs 或 accepted 中。新增材料用 `workflow inputs --stage <本轮> --files …` 登记，文件列表保留已有固定来源；重新取 next 核对后才 begin。不要先 begin 再登记，也不要提前读取未登记旧稿。已执行中才发现缺输入时停止并真实中断/恢复，不绕过状态保护。
+
 本轮 E7。加载接受增量、最新正式相关正文、[knowledge 模板](../assets/knowledge.md)、[写作](../../paper/references/writing.md)、[Obsidian](../../paper/references/obsidian.md)和必要 [审阅协议](../../paper/references/review-publish.md)。
 
 以已有页为基础合并独立解释/实例/条件，而非用一份新摘要覆盖整页。用户原话、旧有效独特解释、身份与稳定块保留。知识→论文实例/证据→原始版本能回查，论文仍自足讲主要机制，必要的知识关系有说明。
