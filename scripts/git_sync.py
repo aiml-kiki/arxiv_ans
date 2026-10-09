@@ -91,7 +91,7 @@ def failure_kind(rc: int, output: str) -> str:
                  "certificate problem", "host key verification failed", "http 403", "error: 403")
     if any(item in low for item in permanent):
         return "action_required"
-    transient = ("timed out", "timeout", "could not resolve", "couldn't resolve",
+    transient = ("timed out", "timeout", "operation too slow", "could not resolve", "couldn't resolve",
                  "failed to connect", "couldn't connect", "connection reset", "connection refused",
                  "connection closed", "empty reply", "recv failure", "send failure",
                  "http/2", "curl 16", "curl 18", "curl 28", "curl 35", "curl 52", "curl 55",
