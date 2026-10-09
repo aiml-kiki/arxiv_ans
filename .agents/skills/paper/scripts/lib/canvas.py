@@ -87,7 +87,7 @@ def audit_canvas(vault: Path, data: dict, changes: dict | None = None,
     candidate overlays and explicit proposed-deletion diagnostics.
     """
     from .core import inside
-    from .notes import source_records, validate_link, visible_markdown, wiki_target
+    from .notes import source_records, validate_link, visible_markdown, wiki_parts, wiki_target
     vault = vault.resolve()
     overrides = {inside(vault, value): text for value, text in (changes or {}).items()}
     removed = {path for path, text in overrides.items() if text is None}
@@ -120,7 +120,7 @@ def audit_canvas(vault: Path, data: dict, changes: dict | None = None,
                 validate_link(vault, origin, destination, pages_by_path, overrides, wiki=False)
             elif node.get('type') == 'text':
                 for link in re.findall(r'\[\[([^\]]+)\]\]', visible_markdown(node.get('text', ''))):
-                    if not link.split('|', 1)[0].split('#', 1)[0]:
+                    if not wiki_parts(link)[0].split('#', 1)[0]:
                         raise ValueError('文字卡的Wiki须给真实页面，不能用无所属页面的自链接')
                     target = wiki_target(vault, origin, link, overrides)
                     if target in removed:

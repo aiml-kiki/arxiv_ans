@@ -9,7 +9,7 @@ import re
 import shutil
 
 from .core import atomic_text, digest, inside, locked, read_json, safe_id, utc_now, write_json
-from .notes import FOLDERS, check, rebase_markdown, validate_note_frontmatter, visible_markdown, wiki_target
+from .notes import FOLDERS, check, rebase_markdown, validate_note_frontmatter, visible_markdown, wiki_parts, wiki_target
 
 
 def target_path(root, value):
@@ -39,7 +39,7 @@ def rewrite_wiki(root, content, origin, mapping):
     """Rewrite only visible Wiki destinations, preserving aliases and block fragments."""
     edits = []
     for match in re.finditer(r'\[\[([^\]]+)\]\]', visible_markdown(content)):
-        destination, divider, alias = match[1].partition('|')
+        destination, divider, alias = wiki_parts(match[1])
         name, hashmark, anchor = destination.partition('#')
         path = wiki_target(root, origin, name, {value: '' for value in mapping}) if name else origin
         if path not in mapping:

@@ -12,7 +12,7 @@ from pathlib import Path
 import re
 
 from .core import default_root, digest, inside, locked, read_json, safe_id, utc_now, write_json
-from .notes import note_paths, read_note, visible_markdown
+from .notes import note_paths, read_note, visible_markdown, wiki_parts
 
 FORMAT = "paper-semantic-v1"
 OBJECT_TYPES = {"命题": "claim", "关系": "relation", "未解问题": "question", "知识更新": "delta"}
@@ -69,7 +69,7 @@ def _refs(value, current_path):
         raise ValueError("语义引用须为 [[库根相对页#^稳定块ID]]")
     refs = []
     for match in matches:
-        dest = match[1].split("|", 1)[0].strip()
+        dest = wiki_parts(match[1])[0].strip()
         if "#^" not in dest:
             raise ValueError(f"语义引用缺少稳定块 ID：{dest}")
         page, block = dest.rsplit("#^", 1)
@@ -266,7 +266,7 @@ def _bind_evidence(evidence, catalog):
     chosen = sorted(candidates, key=lambda entry: entry["manifest"])[0]
     links = list(WIKI.finditer(evidence["link"]))
     if len(links) == 1:
-        link_path = links[0][1].split("|", 1)[0].split("#", 1)[0].strip()
+        link_path = wiki_parts(links[0][1])[0].split("#", 1)[0].strip()
         if link_path != chosen["source_path"]:
             raise ValueError(f"证据链接与固定来源不一致：{link_path} != {chosen['source_path']}")
     elif not evidence["link"].startswith("https://"):

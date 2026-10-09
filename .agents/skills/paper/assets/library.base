@@ -1,0 +1,93 @@
+filters:
+  and:
+    - file.ext == "md"
+    - or:
+        - file.inFolder("论文")
+        - file.inFolder("知识")
+        - file.inFolder("专题")
+properties:
+  file.name:
+    displayName: 页面
+  file.mtime:
+    displayName: 最近编辑
+  note.analysis:
+    displayName: 分析程度
+  note.updated:
+    displayName: 分析更新日期
+  note.kind:
+    displayName: 类型
+views:
+  - type: table
+    name: 最近编辑
+    order:
+      - file.name
+      - file.mtime
+      - analysis
+    sort:
+      - property: file.mtime
+        direction: DESC
+    limit: 8
+  - type: table
+    name: 论文
+    filters: file.inFolder("论文")
+    order:
+      - file.name
+      - analysis
+      - version
+      - updated
+  - type: table
+    name: 知识
+    filters: file.inFolder("知识")
+    order:
+      - file.name
+      - analysis
+      - tags
+  - type: table
+    name: 对比
+    filters:
+      and:
+        - file.inFolder("专题")
+        - note.kind == "comparison"
+    order:
+      - file.name
+      - analysis
+      - updated
+  - type: table
+    name: 研究专题
+    filters:
+      and:
+        - file.inFolder("专题")
+        - note.kind == "topic"
+    order:
+      - file.name
+      - analysis
+      - updated
+  - type: table
+    name: 专题
+    filters: file.inFolder("专题")
+    order:
+      - file.name
+      - kind
+      - analysis
+      - updated
+  - type: table
+    name: 未分类专题
+    filters:
+      and:
+        - file.inFolder("专题")
+        - "!note.kind"
+    order:
+      - file.name
+      - analysis
+      - updated
+  - type: table
+    name: 最近更新
+    filters: file.inFolder("论文")
+    order:
+      - file.name
+      - analysis
+      - updated
+    sort:
+      - property: updated
+        direction: DESC
+    limit: 8

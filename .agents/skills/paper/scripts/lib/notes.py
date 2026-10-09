@@ -76,18 +76,40 @@ def table_render_issues(body):
     """Catch Wiki aliases that Markdown tables can split into extra cells."""
     issues = []
     for index, line in enumerate(visible_markdown(body).splitlines(), 1):
-        if re.match(r'^\s*\|', line) and re.search(r'\[\[[^\]\n]*\|[^\]\n]*\]\]', line):
-            issues.append(f'第 {index} 行：表格中的Wiki别名含竖线，可能被拆列；请把链接移到表外')
+        if not re.match(r'^\s*\|', line):
+            continue
+        for match in re.finditer(r'\[\[([^\]\n]+)\]\]', line):
+            for pos, char in enumerate(match[1]):
+                prefix = match[1][:pos]
+                escapes = len(prefix) - len(prefix.rstrip('\\'))
+                if char == '|' and escapes % 2 == 0:
+                    issues.append(f'第 {index} 行：表格中的Wiki竖线未转义，可能被拆列；请使用\\|或把链接移到表外')
+                    break
     return issues
 
 def block_anchors(body):
     """Return renderable Obsidian block IDs and misplaced-ID diagnostics."""
-    lines = visible_markdown(body).splitlines()
+    visible = visible_markdown(body)
+    lines = visible.splitlines()
+    # Link fragments are references, not malformed declarations of block IDs.
+    # Mask them only for diagnostics; actual anchors still use original text so
+    # an ID preceding a trailing link cannot become a valid paragraph anchor.
+    diagnostic = list(visible)
+    spans = [(m.start(), m.end()) for m in re.finditer(r'\[\[[^\]]+\]\]', visible)]
+    try:
+        spans.extend((start, end) for start, end, _ in markdown_destinations(body))
+    except ValueError:
+        pass  # The link checker reports malformed Markdown independently.
+    for start, end in spans:
+        for pos in range(start, end):
+            if diagnostic[pos] != '\n':
+                diagnostic[pos] = ' '
+    diagnostic_lines = ''.join(diagnostic).splitlines()
     anchors, issues = [], []
     for index, line in enumerate(lines):
         match = BLOCK_ANCHOR.search(line)
         if not match:
-            candidate = re.search(r'\^(?:claim-|c-|r-|q-|d-|question-|relation-|delta-)[^\s]*\s*$', line)
+            candidate = re.search(r'\^(?:claim-|c-|r-|q-|d-|question-|relation-|delta-)[^\s]*\s*$', diagnostic_lines[index])
             if candidate:
                 issues.append(f'第 {index + 1} 行：块标识格式无效；使用ASCII字母/数字/连字符，段尾标识前须有空格')
             continue
@@ -160,6 +182,18 @@ def local_destination(root, page, destination):
     target = inside(root, name.lstrip('/') if name.startswith('/') else page.parent.relative_to(root) / name)
     return target, unquote(parts.fragment)
 
+def wiki_parts(destination):
+    """Split a Wiki target and retain the exact plain or table-escaped alias.
+
+    Only the escape immediately before the alias separator is syntax. Do not
+    unescape paths or fragments generally; vault path safety rules still apply.
+    """
+    target, divider, alias = destination.partition('|')
+    if divider and target.endswith('\\'):
+        target, divider = target[:-1], '\\|'
+    return target, divider, alias
+
+
 def wiki_target(root, page, destination, overrides=None):
     """Resolve an explicit attachment or a Markdown title using one shared rule.
 
@@ -168,7 +202,7 @@ def wiki_target(root, page, destination, overrides=None):
     count as existence so outgoing and incoming checks use the same overlay.
     """
     root = Path(root).resolve()
-    name = destination.split('|', 1)[0].split('#', 1)[0]
+    name = wiki_parts(destination)[0].split('#', 1)[0]
     target = inside(root, name) if name else page
     if not name:
         return target
@@ -210,7 +244,7 @@ def wiki_target(root, page, destination, overrides=None):
 def validate_link(root, page, destination, pages_by_path, overrides=None, wiki=False, allow_legacy_orphan=False):
     overrides = overrides or {}
     if wiki:
-        file, _, anchor = destination.split('|', 1)[0].partition('#')
+        _, _, anchor = wiki_parts(destination)[0].partition('#')
         target = wiki_target(root, page, destination, overrides)
     else:
         resolved = local_destination(root, page, destination)
@@ -350,7 +384,7 @@ def source_target(root, value):
     if not isinstance(value, str) or not value.strip():
         raise ValueError('论文必须给固定 source')
     if value.startswith('[[') and value.endswith(']]'):
-        value = value[2:-2].split('|', 1)[0].split('#', 1)[0]
+        value = wiki_parts(value[2:-2])[0].split('#', 1)[0]
     return inside(root, value)
 
 

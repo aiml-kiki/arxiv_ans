@@ -11,5 +11,6 @@
 - [OpenScholar](https://github.com/OpenScholar/OpenScholar) 与 [PaperQA2](https://github.com/Future-House/paper-qa)：按研究问题检索、证据综合与反馈核验；本包不把自动引文或模型评审当独立实验证据。
 - [上下文工程](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents)：最小工作包、持久高信号恢复记录与分工，不能据此承诺任意长程遵循率。
 - [Obsidian links](https://obsidian.md/help/links)、[Properties](https://obsidian.md/help/properties)、[Callouts](https://obsidian.md/help/callouts)：原生交互语法；实际渲染验收须记录真实范围。
+- [Advanced syntax](https://obsidian.md/help/advanced-syntax)、[Bases syntax](https://obsidian.md/help/bases/syntax)：表内 Wiki 别名转义、公式与原生视图。最近编辑用 `file.mtime`，分析更新日期用显式属性；旧页无分类也不能消失。排版规则只在成文/审阅加载，不能削弱科学条件或覆盖用户原话。
 
 保留旧体系的自然正文、关键实现细节、用户原话、稳定块及库根链接；结合 arivx 的固定来源、显式命题/裁决、研究追溯与认知更新。拒绝按链接数/引文数给知识成熟度、删除引用边强行 DAG、把未披露项猜成实现事实、自动把全部临时记录写成公开卡片。
