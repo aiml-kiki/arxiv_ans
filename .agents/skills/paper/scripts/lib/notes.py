@@ -462,10 +462,13 @@ def check(root, changes=None):
         paths.add(root / '首页.md')
     for path in sorted(paths - removed):
         rel = str(path.relative_to(root))
+        content, body, meta = None, '', {}
         try:
             content = overrides[path] if path in overrides else path.read_text(encoding='utf-8')
             if not isinstance(content, str):
                 raise ValueError('正文必须为字符串')
+            front = re.match(r'\A---\r?\n.*?\r?\n---(?:\r?\n|$)', content, re.S)
+            body = content[front.end():] if front else content
             if path.name == '首页.md':
                 match = re.match(r'\A---\r?\n(.*?)\r?\n---(?:\r?\n|$)', content, re.S)
                 meta = yaml.safe_load(match[1]) if match else {}
@@ -496,7 +499,6 @@ def check(root, changes=None):
                                and str(data['version']) == str(meta.get('version'))]
                     if not matched:
                         raise ValueError('论文id/source/version没有匹配的固定来源')
-            docs.append((path, body, meta))
             anchors, anchor_issues = block_anchors(body)
             if len(anchors) != len(set(anchors)):
                 raise ValueError('块ID重复')
@@ -504,6 +506,8 @@ def check(root, changes=None):
                           for issue in anchor_issues + table_render_issues(body))
         except (OSError, ValueError, TypeError, KeyError, yaml.YAMLError) as exc:
             errors.append({'path': rel, 'message': str(exc)})
+        if isinstance(content, str):
+            docs.append((path, body, meta))  # A legacy metadata error must not hide incoming links.
     for path, body, meta in docs:
         rel = str(path.relative_to(root))
         visible = visible_markdown(body)

@@ -37,6 +37,13 @@ class ReviewScope(unittest.TestCase):
                 self.assertGreater(check_changes(self.root, {"知识/A.md": note("a", body)})["errors"], 0)
         self.assertGreater(check_changes(self.root, {"知识/A.md": None})["errors"], 0)
 
+    def test_invalid_legacy_metadata_does_not_hide_incoming_links(self):
+        (self.root / "知识/Old.md").write_text("broken legacy metadata\n\n[[A#^stable]]\n")
+        report = check_changes(self.root, {"知识/A.md": note("a", "removed anchor")})
+        self.assertGreater(report["errors"], 0)
+        self.assertTrue(any(issue.get("path") == "知识/Old.md" and issue.get("target") == "知识/A.md"
+                            for issue in report["issues"]))
+
     def test_publish_and_actual_postwrite_check(self):
         content = note("a", "new content ^stable")
         preview = stage(self.root, {"知识/A.md": content}, "probe")
