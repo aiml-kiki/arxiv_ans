@@ -17,7 +17,7 @@ description: 显式运行 paper-trace 或由已授权 paper 工作流调用时�
 | T5 | [coverage](references/coverage.md) | 覆盖/停止裁决、缺线和选读问题 |
 | T6 / 专题成文 | [composition](references/composition.md) | 有边界的研究地图与开放问题 |
 
-每轮交回协调者接受后由同一追溯者真实续派；按实际范围选择轮次，不假装执行未做检索。只加载当前指南与必要 [来源](../paper/references/protocol-source.md)/[证据](../paper/references/protocol-claim-evidence.md)片段。独立来源需求交 paper-fetch；新论文只按问题深度做局部阅读或 paper-read，不全文精读所有候选。
+一位独立追溯 owner 按 [自主执行契约](../paper/references/unit-owner.md) 完成所选阶段与内部核对，真实集合/筛选落盘，只交最终结果或异常。只加载当前指南与必要来源/证据片段；新论文按问题深度局部阅读，确需完整精读才交独立 paper-read owner，不全文读所有候选。
 
 引用图保留真实边，可用 SCC/投影派生视图，不能删边强造 DAG。引用不是继承；技术关系须双方方法依据。跨来源判断缺分析时借 paper-compare 的必要当前轮；T6 使用 C9 成文，不另建第七能力。
 

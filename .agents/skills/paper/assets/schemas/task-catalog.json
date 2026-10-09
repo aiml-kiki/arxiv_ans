@@ -45,9 +45,9 @@
     "E5": {"name": "依赖影响", "owner": "dependency_tool/knowledge_integrator", "rounds": ["K2"], "gate": "按语义逐项判受影响与不受影响，不沿普通导航传播"},
     "E6": {"name": "未解问题生命周期", "owner": "knowledge_integrator", "rounds": ["K2"], "conditional": true, "gate": "解决、条件澄清、仍未知、暂缓有判据，不按日期裁决"},
     "E7": {"name": "成组更新候选", "owner": "knowledge_integrator/coordinator", "rounds": ["K4"], "gate": "去同义重复，保留用户原话与独特解释，真实证据回链"},
-    "F1": {"name": "真实路由和独占输出", "owner": "coordinator", "rounds": ["every_dispatch"], "gate": "实际调用记录、执行者ID、依赖、路径与回退理由"},
-    "F2": {"name": "当前工作包和恢复", "owner": "coordinator/workflow_tool", "rounds": ["every_round"], "gate": "指南、来源、已接受版本、有效约束与具体缺口可直达"},
-    "F3": {"name": "协调者具体验收", "owner": "coordinator", "rounds": ["every_return"], "gate": "实际答案、来源、接受或定向返工；填写字段不是科学验证"},
+    "F1": {"name": "真实路由和独占输出", "owner": "main/unit_owner", "rounds": ["every_dispatch"], "gate": "真实owner启动/局部助手调用与内部checkpoint分开登记；独占输出、依赖和回退"},
+    "F2": {"name": "当前工作包和恢复", "owner": "unit_owner/workflow_tool", "rounds": ["every_round"], "gate": "当前指南小节、来源和接受版本路径/哈希；默认不重复累计正文"},
+    "F3": {"name": "单元内部具体验收", "owner": "unit_owner/local_reviewer", "rounds": ["every_return"], "gate": "实际答案/来源核对、自查或真实独立复核、接受/定向返工；父会话只审最终结果"},
     "F4": {"name": "最终候选检查", "owner": "validator/coordinator", "rounds": ["candidate_group"], "gate": "结构、语义、入出链、阅读缺口及实际UI核验范围"},
     "F5": {"name": "批准与冲突保护", "owner": "single_publisher", "rounds": ["authorized_publish"], "gate": "具体批准匹配正文、冲突不静默覆盖、证据持久保留"},
     "F6": {"name": "认知更新和续点", "owner": "coordinator/authors", "rounds": ["boundaries"], "gate": "实际判断改变的理由、未知、下一步；无变化不编造"}

@@ -1,13 +1,14 @@
-"""Coordinator-owned round state. Records actual host calls; never calls an LLM.
+"""Unit-owned checkpoints and actual host calls; never calls an LLM.
 
 Run through ``uv run .../research.py --root VAULT workflow ...``. Fields and
-hashes are checked here; a coordinator must judge the scientific answers.
+hashes are checked here; semantic checks remain attributed to their real reviewer.
 """
 from __future__ import annotations
 
 import argparse
 from copy import deepcopy
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -195,6 +196,9 @@ def initialize(root: Path, run: str, plan: dict) -> dict:
     goal = text(plan.get("goal"), "具体研究目标")
     if not isinstance(plan.get("constraints", []), list):
         raise ValueError("constraints须为用户约束记录列表")
+    autonomy = plan.get("autonomy", "unit")
+    if autonomy not in {"unit", "interactive"}:
+        raise ValueError("autonomy须为unit或interactive")
     specs = plan.get("units")
     if not isinstance(specs, list) or not specs:
         raise ValueError("plan.units须是非空列表")
@@ -208,6 +212,9 @@ def initialize(root: Path, run: str, plan: dict) -> dict:
         ident, kind = safe_id(spec["id"]), spec.get("kind")
         if ident in units or kind not in STAGES:
             raise ValueError("单元ID重复或kind不是read/compare/trace/knowledge")
+        unit_autonomy = spec.get("autonomy", autonomy)
+        if unit_autonomy not in {"unit", "interactive"}:
+            raise ValueError("单元autonomy须为unit或interactive")
         files, manifests = freeze_inputs(root, spec.get("inputs", []), kind)
         output_dir = inside(root, f".research/work/{run}/units/{ident}/results")
         draft_dir = inside(root, f".research/drafts/{run}/units/{ident}")
@@ -243,6 +250,7 @@ def initialize(root: Path, run: str, plan: dict) -> dict:
         units[ident] = {"id": ident, "kind": kind, "goal": spec.get("goal", goal), "inputs": files,
                         "sources": manifests, "depends_on": dependencies, "tasks": decisions,
                         "rounds": rounds, "owner": None, "owner_history": [], "handover": [],
+                        "autonomy": unit_autonomy, "owner_active": False,
                         "output_dir": str(output_dir.relative_to(root)), "draft_dir": str(draft_dir.relative_to(root)),
                         "draft": str(draft.relative_to(root)), "target": target,
                         "declared_input_paths": list(dict.fromkeys(spec.get("inputs", []))),
@@ -259,10 +267,10 @@ def initialize(root: Path, run: str, plan: dict) -> dict:
                        "reason": "本运行所选能力或横向保障" if key in chosen or key.startswith(("A", "F")) else f"当前目标所选能力为{','.join(sorted({u['kind'] for u in units.values()}))}"}
                  for key in tasks}
     return {"schema_version": 2, "run_id": run, "goal": goal, "created": utc_now(), "updated": utc_now(),
-            "max_workers": limit, "units": units, "task_scope": selection,
+            "max_workers": limit, "autonomy": autonomy, "units": units, "task_scope": selection,
             "constraints": plan.get("constraints", []), "constraint_history": [], "events": [],
             "authorization": plan.get("authorization", {}), "integration": None,
-            "semantic_verification": "coordinator_required_not_performed_by_script"}
+            "semantic_verification": "attributed_human_or_agent_checks_not_performed_by_script"}
 
 
 def validate_dag(units: dict) -> None:
@@ -340,13 +348,60 @@ def guide_refs(unit: dict, stage: dict, active: list[str]) -> list[dict]:
     return refs
 
 
-def short_record(record: dict) -> dict:
-    return {key: record.get(key) for key in ("unit", "stage", "files", "answers", "evidence", "coverage",
-                                            "judgment_changes", "critical_details", "gaps", "finding")}
+def autonomy_mode(unit: dict) -> str:
+    """Missing fields are legacy interactive semantics, never an implicit migration."""
+    return unit.get("autonomy", "interactive")
 
 
-def short_revision(value: dict) -> dict:
-    result = {key: value[key] for key in ("decision", "reason", "finding", "at") if key in value}
+def owner_running(unit: dict) -> bool:
+    stage = current_round(unit)
+    if not unit["owner"] or unit["owner"]["mode"] != "agent" or not stage:
+        return False
+    if autonomy_mode(unit) == "unit":
+        return unit.get("owner_active", False)
+    return stage["status"] == "executing"
+
+
+def record_reference(root: Path, state: dict, unit: dict, stage: dict, field: str) -> dict:
+    path = archived_state_path(root, state["run_id"])
+    if not path.is_file():
+        path = state_path(root, state["run_id"])
+    index = unit["rounds"].index(stage)
+    value = stage[field]
+    return {"path": str(path.relative_to(root)),
+            "json_pointer": f"/units/{unit['id']}/rounds/{index}/{field}",
+            "record_sha256": digest(json.dumps(value, ensure_ascii=False, sort_keys=True))}
+
+
+def short_record(record: dict, detail: str = "compact", reference: dict | None = None) -> dict:
+    if detail == "full":
+        return {key: record.get(key) for key in ("unit", "stage", "files", "answers", "evidence", "coverage",
+                                                "judgment_changes", "critical_details", "gaps", "finding")}
+    result = {key: record.get(key) for key in ("unit", "stage", "files")}
+    result["counts"] = {key: len(record.get(key, [])) for key in
+                        ("answers", "evidence", "coverage", "judgment_changes", "critical_details", "gaps")}
+    result["review_kind"] = record.get("finding", {}).get("review_kind", "legacy_coordinator_review")
+    if reference:
+        result["record_ref"] = reference
+        result["interface_ref"] = {**reference, "json_pointer": reference["json_pointer"] + "/critical_details",
+                                   "record_sha256": digest(json.dumps(record.get("critical_details", []), ensure_ascii=False, sort_keys=True))}
+    return result
+
+
+def short_revision(value: dict, detail: str = "compact") -> dict:
+    if detail == "full":
+        result = {key: value[key] for key in ("decision", "reason", "finding", "at") if key in value}
+    else:
+        result = {key: value[key] for key in ("decision", "at") if key in value}
+        if value.get("reason"):
+            result["reason"] = value["reason"][:400]
+        finding = value.get("finding", {})
+        if finding:
+            changes = finding.get("required_changes", [])
+            result.update(review_kind=finding.get("review_kind", "legacy_coordinator_review"),
+                          summary=finding.get("summary", "")[:400],
+                          required_changes=[str(item)[:400] for item in changes[:8]],
+                          required_change_count=len(changes))
     if value.get("previous_result"):
         result["previous_files"] = value["previous_result"]["files"]
     return result
@@ -369,7 +424,7 @@ def archive_view(root: Path, run: str, value: dict, command: str) -> dict:
     return value
 
 
-def relevant_records(state: dict, unit: dict, stage: dict, records: list[dict]) -> tuple[list[dict], list[dict]]:
+def relevant_records(root: Path, state: dict, unit: dict, stage: dict, records: list[dict], detail: str = "compact") -> tuple[list[dict], list[dict]]:
     """Select semantic inputs before packaging; other accepted versions stay addressable."""
     own_needs = {
         "R1": set(), "R2a": {"R1"}, "R2b": {"R1", "R2a"}, "R2c": {"R1", "R2a", "R2b"},
@@ -379,22 +434,29 @@ def relevant_records(state: dict, unit: dict, stage: dict, records: list[dict]) 
         "T4": {"T1", "T2", "T3"}, "T5": {"T1", "T4"},
         "K1": set(), "K2": {"K1"}, "K3": {"K1", "K2"},
     }
-    dependency_needs = {
-        "M1": {"R2a", "R2b", "R2c", "R4"},
-        "M2": {"R2a", "R2b", "R2c", "R3a"},
-        "M3": {"R2c", "R3a", "R3b"},
-        "K1": {"R4", "M4", "T6", "K4"},
-        "K2": {"R4", "M4", "T6", "K4"},
-    }
+    dependency_records = {}
+    for record in records:
+        if record["unit"] != unit["id"]:
+            dependency_records.setdefault(record["unit"], []).append(record)
+    # Only choose within the declared dependency boundary. A later final record
+    # outside that boundary is not an input to this stage-specific dependency.
+    dependency_primary = {}
+    for ident, available in dependency_records.items():
+        final = FINAL[find_unit(state, ident)["kind"]]
+        chosen = next((record for record in reversed(available)
+                       if record["stage"].split("-", 1)[0] == final), available[-1])
+        dependency_primary[ident] = chosen["stage"]
     composition = stage["base"] == FINAL[unit["kind"]]
     primary, addressable = [], []
     for record in records:
         base = record["stage"].split("-", 1)[0]
         own = record["unit"] == unit["id"]
         keep = (own and (composition or base in own_needs.get(stage["base"], set()))) or (
-            not own and base in dependency_needs.get(stage["base"], set()))
+            not own and record["stage"] == dependency_primary.get(record["unit"]))
         if keep:
-            primary.append(short_record(record))
+            source_unit = find_unit(state, record["unit"])
+            source_stage = find_round(source_unit, record["stage"])
+            primary.append(short_record(record, detail, record_reference(root, state, source_unit, source_stage, "accepted")))
         else:
             addressable.append({key: record[key] for key in ("unit", "stage", "files")})
     return primary, addressable
@@ -424,19 +486,24 @@ def protocol_refs(unit: dict, stage: dict, composition: bool) -> list[dict]:
     return refs
 
 
-def next_packet(root: Path, state: dict, ident: str) -> dict:
+def next_packet(root: Path, state: dict, ident: str, detail: str = "compact") -> dict:
     unit = find_unit(state, ident)
     stage = current_round(unit)
+    autonomous = autonomy_mode(unit) == "unit"
     if stage is None:
         prerequisite_records(root, state, unit)
         return {"unit": ident, "status": "all_rounds_accepted", "candidate_kind": unit["candidate_kind"],
-                "draft": str(inside(root, unit["draft"])), "publication": "requires_group_review_and_actual_authorization"}
+                "draft": str(inside(root, unit["draft"])), "action": "report_final_result" if autonomous else "group_review",
+                "autonomy": autonomy_mode(unit), "publication": "requires_group_review_and_actual_authorization"}
     records = prerequisite_records(root, state, unit)
     active = selected_tasks(unit, stage)
     task_catalog = catalog()
     if stage["status"] == "awaiting_review":
-        return {"unit": ident, "stage": stage["id"], "status": stage["status"], "action": "coordinator_review",
-                "pending": short_record(stage["pending"]), "stop": "不可续派下轮；先accept或revise当前结果"}
+        return {"unit": ident, "stage": stage["id"], "status": stage["status"],
+                "autonomy": autonomy_mode(unit), "owner": unit["owner"],
+                "action": "owner_local_review" if autonomous else "coordinator_review",
+                "pending": short_record(stage["pending"], detail, record_reference(root, state, unit, stage, "pending")),
+                "stop": "先记录本轮实际自查或独立审查并accept/revise，再开始下轮" if autonomous else "不可续派下轮；先accept或revise当前结果"}
     refs = guide_refs(unit, stage, active)
     composition = stage["base"] == FINAL[unit["kind"]]
     rules = protocol_refs(unit, stage, composition)
@@ -444,18 +511,20 @@ def next_packet(root: Path, state: dict, ident: str) -> dict:
     if composition:
         templates.append(str(PACKAGE.parent / f"paper-{unit['kind']}" / "assets" / f"{unit['candidate_kind']}.md"))
     output = inside(root, Path(unit["output_dir"]) / f"{stage['id']}.md")
-    active_agents = [key for key, other in state["units"].items() if other["owner"] and
-                     other["owner"]["mode"] == "agent" and current_round(other) and
-                     current_round(other)["status"] == "executing"]
-    primary, addressable = relevant_records(state, unit, stage, records)
+    active_agents = [key for key, other in state["units"].items() if owner_running(other)]
+    primary, addressable = relevant_records(root, state, unit, stage, records, detail)
     capability_entry = str(PACKAGE.parent / f"paper-{unit['kind']}" / "SKILL.md")
-    action = "choose_actual_host_route"
+    action = "start_owner_once" if autonomous else "choose_actual_host_route"
     if stage["status"] == "executing":
-        action = "await_actual_round_result"
+        action = "owner_execute_current_checkpoint" if autonomous else "await_actual_round_result"
     elif unit["owner"]:
-        action = "followup_same_agent" if unit["owner"]["mode"] == "agent" else "continue_main_current_round"
+        action = "owner_begin_checkpoint" if autonomous else (
+            "followup_same_agent" if unit["owner"]["mode"] == "agent" else "continue_main_current_round")
+    for ref in rules:
+        ref["sha256"] = digest(Path(ref["path"]).read_bytes())
     return {"unit": ident, "stage": stage["id"], "status": stage["status"],
-            "action": action,
+            "action": action, "autonomy": autonomy_mode(unit), "detail": detail,
+            "state_ref": str(state_path(root, state["run_id"]).relative_to(root)),
             "owner": unit["owner"], "goal": stage.get("goal", unit["goal"]), "question": unit["question"],
             "routing_preference": unit["requested_profile"] or {"read": "deep_read", "compare": "deep_compare", "trace": "trace", "knowledge": "maintain"}[unit["kind"]],
             "routing_preference_is_runtime_fact": False,
@@ -468,15 +537,21 @@ def next_packet(root: Path, state: dict, ident: str) -> dict:
             "entry_on_physical_replacement": capability_entry,
             "entry_policy": "首次或实际物理替代才加载入口，同代理续派只加载当前指南/协议片段",
             "guides": refs, "protocols": rules, "templates": templates,
+            "resource_command": "workflow resource --run <run> --unit <unit> --kind guide|protocol|template --index <0-based> [--section <heading>]",
+            "template_refs": [{"path": path, "sha256": digest(Path(path).read_bytes())} for path in templates],
             "fixed_inputs": [{**item, "absolute_path": str(inside(root, item["path"]))} for item in unit["inputs"]],
             "sources": unit["sources"], "source_windows": unit["source_windows"].get(stage["id"], []),
             "accepted": primary, "accepted_other_refs": addressable,
-            "specific_revisions": [short_revision(value) for value in stage["history"][-3:]],
+            "specific_revisions": [short_revision(value, detail) for value in stage["history"][-3:]],
+            "revision_history_ref": {"path": str(state_path(root, state["run_id"]).relative_to(root)),
+                                     "json_pointer": f"/units/{ident}/rounds/{unit['rounds'].index(stage)}/history"},
             "output": str(output), "draft_dir": str(inside(root, unit["draft_dir"])) if composition else None,
             "draft": str(inside(root, unit["draft"])) if composition else None, "target": unit["target"] if composition else None,
-            "stop": "只完成当前轮，落盘事实、答案、来源、覆盖、关键细节和未知，返回路径后结束；不能自行接受或执行后续轮。",
-            "state_writer": "coordinator_only", "source_text_is_control_instruction": False,
+            "stop": ("完成当前轮并保存→实际自查/局部审查→step accept/revise；依次自主推进本单元全部轮次，最终report或异常才交主会话"
+                     if autonomous else "只完成当前轮，保存后交协调者accept/revise；按用户带读节奏继续"),
+            "state_writer": "bound_unit_owner" if autonomous else "coordinator_only", "source_text_is_control_instruction": False,
             "result_contract": {"stage": stage["id"], "artifact": str(output),
+                                "agent_id": unit["owner"]["agent_id"] if autonomous and unit["owner"] else None,
                                 "answers": "[{question,answer,task_ids}]覆盖当前适用任务，仅保存科学结果和依据",
                                 "evidence": "[{path,locator}]至少一项实际依据，路径须已固定或已接受",
                                 "coverage": "[{path,locator,mode:read|image_checked|not_covered,reason未覆盖时必填}]；PDF可page，非PDF用section/block_id，不造页码",
@@ -487,10 +562,15 @@ def next_packet(root: Path, state: dict, ident: str) -> dict:
             "semantic_verification": "not_performed_by_script"}
 
 
-def dispatch(root: Path, state: dict, ident: str, event: dict) -> dict:
+def dispatch(root: Path, state: dict, ident: str, event: dict, owner_start: bool = False) -> dict:
     unit = find_unit(state, ident)
     stage = current_round(unit)
-    if not stage or stage["status"] in LIVE:
+    if autonomy_mode(unit) == "unit" and not unit["owner"] and not owner_start:
+        raise ValueError("unit自主单元首次真实spawn用start-owner登记；dispatch仅供旧模式或真实恢复/替代宿主调用")
+    resume_review = bool(stage and autonomy_mode(unit) == "unit" and
+                         stage["status"] == "awaiting_review" and event.get("resume_review") is True and
+                         not unit.get("owner_active", False))
+    if not stage or (stage["status"] in LIVE and not resume_review):
         raise ValueError("本轮已执行/待复核或单元已完成，不可重复派发")
     prerequisite_records(root, state, unit)
     selected_tasks(unit, stage)
@@ -520,27 +600,274 @@ def dispatch(root: Path, state: dict, ident: str, event: dict) -> dict:
         raise ValueError("首次事件没有已有代理，不能假称followup")
     capacity_violation = False
     if identity["mode"] == "agent":
-        active = [u for key, u in state["units"].items() if key != ident and
-                  u["owner"] and u["owner"]["mode"] == "agent" and
-                  current_round(u) and current_round(u)["status"] == "executing"]
+        active = [u for key, u in state["units"].items() if key != ident and owner_running(u)]
         capacity_violation = len(active) >= state["max_workers"]
         if any(u["owner"] and u["owner"]["agent_id"] == agent and not complete(u)
                for key, u in state["units"].items() if key != ident):
             raise ValueError("同一物理代理不能同时拥有两个尚未完成独立单元")
-    record = {"at": utc_now(), "unit": ident, "stage": stage["id"], **event,
+    record = {**event, "at": utc_now(), "unit": ident, "stage": stage["id"],
               "agent_id": agent, "tool": tool, "call_id": call_id, "actual_record": actual_record,
               "actual_model": event.get("actual_model"), "actual_effort": event.get("actual_effort")}
     if capacity_violation:
         record["capacity_violation"] = "实际调用超过上限；协调者须中断超额宿主执行并登记interrupt，不能删除真实事件"
     unit["owner"] = identity
+    if autonomy_mode(unit) == "unit":
+        unit["owner_active"] = True
     unit["owner_history"].append(identity | {"at": record["at"]})
     stage["dispatches"].append(record)
-    stage["status"] = "executing"
-    state["events"].append({"event": "actual_dispatch", **record})
+    if not resume_review:
+        stage["status"] = "executing"
+    state["events"].append({**record, "event": "actual_dispatch", "event_type": "actual_host_call"})
     state["integration"] = None
     return {"unit": ident, "stage": stage["id"], "status": stage["status"], "record": record,
             "requires_actual_host_interrupt": capacity_violation,
             "limitation": "这是协调者提供的实际记录；脚本未调用宿主，不能独立证明其真实性"}
+
+
+def start_owner(root: Path, state: dict, ident: str, event: dict) -> dict:
+    unit = find_unit(state, ident)
+    if autonomy_mode(unit) != "unit" or unit["owner"]:
+        raise ValueError("start-owner只登记unit自主单元首次真实spawn；已有owner须显式接管/恢复")
+    if event.get("mode") != "spawn":
+        raise ValueError("start-owner必须登记真实spawn，不能把内部分轮记录成宿主调用")
+    result = dispatch(root, state, ident, event, owner_start=True)
+    return result | {"autonomy": "unit", "next": "首轮已executing，直接执行并保存→step submit→实际局部检查→step accept/revise；后续ready轮才step begin；全部轮次后report"}
+
+
+def adopt_owner(root: Path, state: dict, ident: str, event: dict) -> dict:
+    unit = find_unit(state, ident)
+    owner, stage = unit["owner"], current_round(unit)
+    if autonomy_mode(unit) == "unit":
+        raise ValueError("已是unit自主单元，不重复登记接管")
+    if not owner or owner["mode"] != "agent" or event.get("agent_id") != owner["agent_id"]:
+        raise ValueError("接管必须绑定既有同一真实代理；替代物理实例先用dispatch如实登记交接")
+    if event.get("observed") is not True:
+        raise ValueError("接管须observed:true表示协调者已核对既有owner身份")
+    if stage and stage["status"] == "executing":
+        raise ValueError("先真实中断并登记interrupt，再接管现有执行轮，不改变仍在运行的控制约定")
+    prerequisite_records(root, state, unit)
+    record = {"event": "owner_adoption", "event_type": "control_change", "unit": ident,
+              "agent_id": owner["agent_id"], "from_autonomy": autonomy_mode(unit), "to_autonomy": "unit",
+              "reason": text(event.get("reason"), "显式接管理由"),
+              "adoption_record": text(event.get("adoption_record"), "真实owner身份及授权/恢复范围依据"), "at": utc_now()}
+    unit["autonomy"], unit["owner_active"] = "unit", False
+    unit.setdefault("autonomy_history", []).append(record)
+    state["events"].append(record)
+    state["integration"] = None
+    return {"unit": ident, "owner": owner, "autonomy": "unit", "record": record,
+            "next": "真实恢复同代理后登记dispatch mode:followup；此接管不代表宿主调用，旧事件原样保留"}
+
+
+def bound_owner(unit: dict, agent_id: str, require_active: bool = True) -> None:
+    if autonomy_mode(unit) != "unit" or not unit["owner"] or unit["owner"]["mode"] != "agent":
+        raise ValueError("step仅用于有真实agent owner的unit自主单元")
+    if text(agent_id, "执行owner ID") != unit["owner"]["agent_id"]:
+        raise ValueError("内部检查点必须绑定本单元真实owner，不能换人或冒充宿主followup")
+    if require_active and not unit.get("owner_active", False):
+        raise ValueError("owner已中断/未真实恢复；先登记实际恢复宿主调用，不能以内部step冒充恢复")
+
+
+def owner_step(root: Path, state: dict, ident: str, agent_id: str, operation: str, payload: dict | None) -> dict:
+    unit = find_unit(state, ident)
+    bound_owner(unit, agent_id)
+    stage = current_round(unit)
+    if not stage:
+        raise ValueError("单元所有轮次已接受，使用report交最终摘要")
+    checkpoint = {"event": "internal_checkpoint", "event_type": "internal_checkpoint", "unit": ident,
+                  "stage": stage["id"], "agent_id": agent_id, "operation": operation, "at": utc_now(),
+                  "actual_host_call": False}
+    if operation == "begin":
+        if payload is not None:
+            raise ValueError("step begin不接受科学结果payload，提交结果用step submit")
+        if stage["status"] not in {"ready", "revision_required", "interrupted"}:
+            raise ValueError("当前检查点已执行/待审，不重复begin")
+        prerequisite_records(root, state, unit)
+        selected_tasks(unit, stage)
+        if sum(owner_running(other) for other in state["units"].values()) > state["max_workers"]:
+            raise ValueError("实际活跃owner超过容量，须真实中断超额实例并登记interrupt")
+        stage.setdefault("executions", []).append(checkpoint)
+        stage["status"] = "executing"
+        value = {"unit": ident, "stage": stage["id"], "status": "executing"}
+    elif operation == "submit":
+        if not isinstance(payload, dict):
+            raise ValueError("step submit须--payload实际结果JSON")
+        if payload.get("agent_id", agent_id) != agent_id:
+            raise ValueError("结果agent_id与本单元owner不一致")
+        value = submit(root, state, ident, {**payload, "agent_id": agent_id})
+    else:
+        if operation not in {"accept", "revise"} or not isinstance(payload, dict):
+            raise ValueError("step accept/revise须--payload实际局部检查JSON")
+        if payload.get("review_kind") not in {"self_check", "independent_review"}:
+            raise ValueError("owner阶段验收须如实标记self_check或实际independent_review；最终外部复核用report --finding")
+        value = review(root, state, ident, payload, operation == "accept")
+    state["events"].append(checkpoint)
+    state["integration"] = None
+    return value | {"execution_record": checkpoint, "next": "本owner按next当前小包自主继续；只交最终report或异常"}
+
+
+def validate_finding(unit: dict, finding: dict, final: bool = False) -> None:
+    reviewer = text(finding.get("reviewer"), "实际复核者")
+    text(finding.get("summary"), "具体接受/返工原因")
+    kind = finding.get("review_kind")
+    if autonomy_mode(unit) == "unit" or kind is not None or final:
+        if kind not in {"self_check", "independent_review", "final_review"}:
+            raise ValueError("须标记实际review_kind:self_check|independent_review|final_review")
+        if final != (kind == "final_review"):
+            raise ValueError("final_review只审最终候选；阶段验收用self_check或independent_review")
+        owner_id = unit["owner"]["agent_id"] if unit["owner"] else None
+        if kind == "self_check" and reviewer != owner_id:
+            raise ValueError("self_check的reviewer必须是本单元真实owner")
+        if kind in {"independent_review", "final_review"}:
+            if reviewer == owner_id:
+                raise ValueError("owner自查不能标为独立或最终外部复核")
+            text(finding.get("actual_review_record"), "实际外部审查记录/工具结果定位")
+    checks = finding.get("checks")
+    if not isinstance(checks, list) or not checks:
+        raise ValueError("finding.checks须列具体核验问题、发现和产物/来源定位")
+    for check in checks:
+        text(check.get("question"), "核验问题")
+        text(check.get("finding"), "核验发现")
+        text(check.get("locator"), "核验产物/来源定位")
+
+
+def accepted_binding(unit: dict) -> str:
+    return digest(json.dumps({"sources": unit["sources"],
+                              "rounds": [{"id": item["id"], "status": item["status"], "accepted": item["accepted"]}
+                                         for item in unit["rounds"]]}, ensure_ascii=False, sort_keys=True))
+
+
+def final_report(root: Path, state: dict, ident: str, report: dict | None = None, finding: dict | None = None) -> dict:
+    unit = find_unit(state, ident)
+    if not complete(unit):
+        raise ValueError("report仅交全部适用轮次已接受的最终候选；阶段问题按异常报告，不抄阶段正文")
+    prerequisite_records(root, state, unit)
+    binding = accepted_binding(unit)
+    accepted = [item["accepted"] for item in unit["rounds"] if item["accepted"]]
+    mapping = [item for record in accepted for item in record.get("candidates", [])]
+    result = {"unit": ident, "status": "final_candidate", "owner": unit["owner"],
+              "autonomy": autonomy_mode(unit), "candidates": mapping, "sources": unit["sources"],
+              "accepted_binding_sha256": binding,
+              "checkpoint_counts": {"accepted": len(accepted),
+                                    "self_check": sum(item.get("finding", {}).get("review_kind") == "self_check" for item in accepted),
+                                    "independent_review": sum(item.get("finding", {}).get("review_kind") == "independent_review" for item in accepted)},
+              "checks": {"file_integrity": "fixed_files_match",
+                         "integrity_scope": "unit fixed inputs, all accepted artifact/candidate versions and evidence files",
+                         "semantic_verification_by_script": False,
+                         "final_review": "not_recorded"}, "publication_authorized_by_script": False}
+    if report is not None:
+        if not isinstance(report, dict):
+            raise ValueError("report须为实际最终摘要JSON")
+        if autonomy_mode(unit) == "unit":
+            bound_owner(unit, report.get("agent_id"), require_active=False)
+        conclusions = report.get("conclusions")
+        if not isinstance(conclusions, list) or not conclusions:
+            raise ValueError("最终report须非空conclusions实际结论摘要，不能复制阶段answers")
+        for conclusion in conclusions:
+            if len(text(conclusion, "最终实质结论")) > 1000:
+                raise ValueError("每项最终结论须≤1000字，完整依据保留在候选及科学记录")
+        if len(conclusions) > 12:
+            raise ValueError("最终交接限12项实质结论，详细内容留候选文件")
+        for field in ("unresolved", "checks"):
+            if not isinstance(report.get(field), list):
+                raise ValueError(f"report.{field}须为列表，无未决可明确空列表")
+        summaries = {field: report.get(field, []) for field in
+                     ("conclusions", "unresolved", "checks", "knowledge_leads", "coverage_scope")}
+        for field, items in summaries.items():
+            if not isinstance(items, list) or len(items) > 20 or any(
+                    not isinstance(item, str) or not item.strip() or len(item) > 1000 for item in items):
+                raise ValueError(f"report.{field}限20项、每项≤1000字的具体摘要")
+        if len(json.dumps(summaries, ensure_ascii=False)) > 6000:
+            raise ValueError("最终report全部摘要字段合计限6000字符（含JSON格式）；完整科学内容保留在候选与记录")
+        saved = {"unit": ident, "agent_id": report.get("agent_id"), "conclusions": conclusions,
+                 "unresolved": report["unresolved"], "owner_checks": report["checks"],
+                 "knowledge_leads": summaries["knowledge_leads"], "coverage_scope": summaries["coverage_scope"],
+                 "accepted_binding_sha256": binding, "at": utc_now()}
+        path = f".research/records/runs/{state['run_id']}/reports/{ident}-{digest(json.dumps(saved, ensure_ascii=False, sort_keys=True))}.json"
+        write_json(inside(root, path), saved)
+        unit["final_report"] = snapshot(root, path)
+        state["events"].append({"event": "final_report", "event_type": "unit_delivery", "unit": ident,
+                                "report": unit["final_report"], "at": saved["at"]})
+    if unit.get("final_report"):
+        verify(root, [unit["final_report"]])
+        saved = read_json(inside(root, unit["final_report"]["path"]))
+        if saved.get("accepted_binding_sha256") != binding:
+            raise ValueError("最终摘要绑定的接受记录已改变，须由owner重新report，不复用旧摘要")
+        result.update({key: saved[key] for key in ("conclusions", "unresolved", "owner_checks")})
+        result.update({key: saved.get(key, []) for key in ("knowledge_leads", "coverage_scope")})
+        result["report_ref"] = unit["final_report"]
+    else:
+        result["report_status"] = "owner_summary_not_recorded"
+    if finding is not None:
+        validate_finding(unit, finding, final=True)
+        if finding.get("decision") not in {"accept", "revise"}:
+            raise ValueError("最终finding须有decision:accept|revise；revise之后定向reopen")
+        if finding["decision"] == "revise" and (not isinstance(finding.get("required_changes"), list) or not finding["required_changes"]):
+            raise ValueError("最终返工须具体required_changes")
+        unit["final_review"] = {"finding": finding, "accepted_binding_sha256": binding, "at": utc_now()}
+        state["events"].append({"event": "final_review", "event_type": "review", "unit": ident,
+                                "reviewer": finding["reviewer"], "decision": finding["decision"],
+                                "accepted_binding_sha256": binding, "at": unit["final_review"]["at"]})
+    final = unit.get("final_review")
+    if final and final.get("accepted_binding_sha256") == binding:
+        result["checks"]["final_review"] = {"decision": final["finding"]["decision"],
+                                           "reviewer": final["finding"]["reviewer"], "at": final["at"],
+                                           "json_pointer": f"/units/{ident}/final_review"}
+    return result
+
+
+def markdown_sections(raw: str, sections: list[str]) -> str:
+    """Return exact heading subtrees; avoid matching headings inside fenced examples."""
+    lines, headings, fenced = raw.splitlines(keepends=True), [], None
+    for index, line in enumerate(lines):
+        fence = re.match(r"^\s{0,3}(`{3,}|~{3,})", line)
+        if fence:
+            marker = fence.group(1)
+            if fenced is None:
+                fenced = marker[0]
+            elif fenced == marker[0]:
+                fenced = None
+            continue
+        heading = re.match(r"^(#{1,6})\s+(.+?)\s*#*\s*$", line.rstrip("\r\n")) if fenced is None else None
+        if heading:
+            headings.append((index, len(heading.group(1)), heading.group(2)))
+    ranges = []
+    for section in sections:
+        matches = [(index, level) for index, level, title in headings if title == section]
+        if len(matches) != 1:
+            raise ValueError(f"当前资源标题须唯一且确实存在: {section}")
+        index, level = matches[0]
+        end = next((position for position, depth, _ in headings if position > index and depth <= level), len(lines))
+        ranges.append((index, end))
+    chosen = {index for start, end in ranges for index in range(start, end)}
+    return "".join(line for index, line in enumerate(lines) if index in chosen)
+
+
+def resource_packet(state: dict, ident: str, kind: str, index: int, sections: list[str]) -> dict:
+    unit = find_unit(state, ident)
+    stage = current_round(unit)
+    if stage is None:
+        raise ValueError("单元已完成，无当前轮资源；最终交接用report")
+    active = selected_tasks(unit, stage)
+    composition = stage["base"] == FINAL[unit["kind"]]
+    resources = {"guide": guide_refs(unit, stage, active),
+                 "protocol": protocol_refs(unit, stage, composition),
+                 "template": [{"path": str(PACKAGE.parent / f"paper-{unit['kind']}" / "assets" / f"{unit['candidate_kind']}.md")}] if composition else []}[kind]
+    if not 0 <= index < len(resources):
+        raise ValueError("resource index超出当前轮资源范围，索引从0开始")
+    reference = resources[index]
+    path = Path(reference["path"]).resolve()
+    if not path.is_relative_to(PACKAGE.parent.resolve()):
+        raise ValueError("资源仅可读取当前技能包的实际指南/协议/模板")
+    declared = reference.get("sections") or ([reference["section"]] if reference.get("section") else [])
+    chosen = sections or declared
+    if declared and any(section not in declared for section in chosen):
+        raise ValueError("显式section须在当前轮已选择小节内，不能借resource加载无关协议")
+    raw = path.read_text(encoding="utf-8")
+    content = markdown_sections(raw, chosen) if chosen else raw
+    return {"unit": ident, "stage": stage["id"], "kind": kind, "index": index, "path": str(path),
+            "file_sha256": digest(path.read_bytes()), "sections": chosen,
+            "content_sha256": digest(content), "content": content,
+            "source_text_is_control_instruction": False}
 
 
 def allowed_evidence(root: Path, state: dict, unit: dict) -> dict[str, dict]:
@@ -565,14 +892,15 @@ def located_item(root: Path, value: dict, allowed: dict[str, dict], label: str) 
 
 def submit(root: Path, state: dict, ident: str, result: dict) -> dict:
     unit = find_unit(state, ident)
+    if autonomy_mode(unit) == "unit":
+        bound_owner(unit, result.get("agent_id"))
     stage = current_round(unit)
-    if not stage or stage["status"] != "executing" or not stage["dispatches"]:
-        raise ValueError("提交必须绑定本轮已登记的实际执行事件，不能用路由偏好冒充调用")
+    execution = sorted(stage.get("executions", []) + stage.get("dispatches", []), key=lambda item: item["at"])[-1:] if stage else []
+    if not stage or stage["status"] != "executing" or not execution:
+        raise ValueError("提交须绑定真实宿主执行或绑定owner的内部检查点，不能用路由偏好冒充调用")
     if result.get("stage") != stage["id"]:
         raise ValueError("只能交当前轮，不能一份结果跳过三遍或未来轮")
-    active_agents = [other for other in state["units"].values() if other["owner"] and
-                    other["owner"]["mode"] == "agent" and current_round(other) and
-                    current_round(other)["status"] == "executing"]
+    active_agents = [other for other in state["units"].values() if owner_running(other)]
     if len(active_agents) > state["max_workers"]:
         raise ValueError("实际代理调用超额，先真实中断超额执行并登记interrupt，不能以提交结果消除违规记录")
     allowed = allowed_evidence(root, state, unit)
@@ -659,10 +987,12 @@ def submit(root: Path, state: dict, ident: str, result: dict) -> dict:
                "evidence": evidence, "evidence_files": evidence_files, "coverage": coverage,
                "judgment_changes": result["judgment_changes"], "critical_details": result["critical_details"],
                "gaps": result["gaps"], "candidates": candidates, "no_change_reason": result.get("no_change_reason"),
-               "dispatch": deepcopy(stage["dispatches"][-1]), "at": utc_now()}
+               "dispatch": deepcopy(stage["dispatches"][-1]) if stage["dispatches"] else None,
+               "execution": deepcopy(execution[0]), "at": utc_now()}
     stage["pending"], stage["status"] = pending, "awaiting_review"
     state["integration"] = None
-    return {"unit": ident, "stage": stage["id"], "status": "awaiting_coordinator_review", "files": files,
+    return {"unit": ident, "stage": stage["id"],
+            "status": "awaiting_owner_local_review" if autonomy_mode(unit) == "unit" else "awaiting_coordinator_review", "files": files,
             "semantic_verification": "not_performed_by_script"}
 
 
@@ -671,15 +1001,9 @@ def review(root: Path, state: dict, ident: str, finding: dict, accept: bool) -> 
     stage = current_round(unit)
     if not stage or stage["status"] != "awaiting_review" or not stage["pending"]:
         raise ValueError("没有待复核的当前轮结果")
-    text(finding.get("reviewer"), "实际协调复核者")
-    text(finding.get("summary"), "具体接受/返工原因")
-    checks = finding.get("checks")
-    if not isinstance(checks, list) or not checks:
-        raise ValueError("finding.checks须列具体核验问题、发现和产物/来源定位")
-    for check in checks:
-        text(check.get("question"), "核验问题")
-        text(check.get("finding"), "核验发现")
-        text(check.get("locator"), "核验产物/来源定位")
+    validate_finding(unit, finding)
+    if not accept and (not isinstance(finding.get("required_changes"), list) or not finding["required_changes"]):
+        raise ValueError("返工须有required_changes具体缺项，不只写不通过")
     prerequisite_records(root, state, unit)
     verify(root, stage["pending"]["files"])
     verify(root, stage["pending"]["evidence_files"])
@@ -695,9 +1019,12 @@ def review(root: Path, state: dict, ident: str, finding: dict, accept: bool) -> 
     stage["pending"] = None
     state["integration"] = None
     following = current_round(unit)
+    if following is None and autonomy_mode(unit) == "unit":
+        unit["owner_active"] = False
     return {"unit": ident, "stage": stage["id"], "decision": "accepted" if accept else "revision_required",
             "next_stage": following["id"] if following else None,
-            "scientific_judgment": "coordinator_recorded_not_independently_verified_by_script"}
+            "review_kind": finding.get("review_kind", "legacy_coordinator_review"),
+            "scientific_judgment": "reviewer_recorded_not_independently_verified_by_script"}
 
 
 def clear_from(unit: dict, stage: str, reason: str) -> set[str]:
@@ -841,16 +1168,22 @@ def interrupt(state: dict, ident: str, reason: str) -> dict:
     stage = current_round(unit)
     if not stage:
         raise ValueError("单元已完成，无待恢复轮")
-    if stage["status"] == "awaiting_review":
+    autonomous = autonomy_mode(unit) == "unit"
+    awaiting_review = stage["status"] == "awaiting_review"
+    if awaiting_review and not autonomous:
         raise ValueError("已交结果应复核或revise，无需将可核对结果标为执行中断")
-    record = {"event": "interrupted", "stage": stage["id"], "reason": text(reason, "实际中断原因"), "at": utc_now()}
+    record = {"event": "interrupted", "stage": stage["id"], "reason": text(reason, "实际中断原因"),
+              "pending_preserved": awaiting_review, "at": utc_now()}
     stage["history"].append(record)
-    stage["status"] = "interrupted"
+    if not awaiting_review:
+        stage["status"] = "interrupted"
+    if autonomous:
+        unit["owner_active"] = False
     state["events"].append(record | {"unit": ident})
     return record
 
 
-def status(root: Path, state: dict) -> dict:
+def status(root: Path, state: dict, detail: str = "compact") -> dict:
     summaries = {}
     for ident, unit in state["units"].items():
         stage = current_round(unit)
@@ -861,31 +1194,46 @@ def status(root: Path, state: dict) -> dict:
             errors.append(str(exc))
         summaries[ident] = {"kind": unit["kind"], "stage": stage["id"] if stage else None,
                             "status": stage["status"] if stage else "all_rounds_accepted", "owner": unit["owner"],
+                            "autonomy": autonomy_mode(unit), "owner_active": owner_running(unit),
+                            "report_ref": unit.get("final_report"),
                             "blocked_by": errors, "pending_task_decisions": [key for key, value in unit["tasks"].items() if value["status"] == "pending"],
                             "accepted_stages": [item["id"] for item in unit["rounds"] if item["status"] == "accepted"],
                             "skipped": {item["id"]: item.get("skip_reasons") for item in unit["rounds"] if item["status"] == "skipped"}}
     return {"run_id": state["run_id"], "goal": state["goal"], "max_workers": state["max_workers"], "units": summaries,
-            "integration": state["integration"], "semantic_verification": state["semantic_verification"]}
+            "state_ref": str((archived_state_path(root, state["run_id"]) if archived_state_path(root, state["run_id"]).exists()
+                              else state_path(root, state["run_id"])).relative_to(root)),
+            "integration": state["integration"] if detail == "full" else (
+                {"status": state["integration"].get("status"), "at": state["integration"].get("at")} if state["integration"] else None),
+            "semantic_verification": state["semantic_verification"]}
 
 
-def recovery(root: Path, state: dict, ident: str | None) -> dict:
+def recovery(root: Path, state: dict, ident: str | None, detail: str = "compact") -> dict:
     units = {ident: find_unit(state, ident)} if ident else state["units"]
     result = {"run_id": state["run_id"], "goal": state["goal"], "user_constraints": state["constraints"],
-              "constraint_history": state["constraint_history"], "authorization": state["authorization"], "units": {}}
+              "constraint_history": state["constraint_history"] if detail == "full" else state["constraint_history"][-3:],
+              "constraint_history_count": len(state["constraint_history"]),
+              "state_ref": str((archived_state_path(root, state["run_id"]) if archived_state_path(root, state["run_id"]).exists()
+                                else state_path(root, state["run_id"])).relative_to(root)),
+              "authorization": state["authorization"], "units": {}}
     for key, unit in units.items():
-        accepted = [short_record(item["accepted"]) for item in unit["rounds"] if item["accepted"]]
+        accepted = [short_record(item["accepted"], detail, record_reference(root, state, unit, item, "accepted"))
+                    for item in unit["rounds"] if item["accepted"]]
         try:
             prerequisite_records(root, state, unit)
             integrity = "fixed_files_match"
         except (ValueError, OSError, KeyError, TypeError) as exc:
             integrity = str(exc)
         current = current_round(unit)
-        result["units"][key] = {"owner": unit["owner"], "sources": unit["sources"], "accepted": accepted,
+        result["units"][key] = {"owner": unit["owner"], "autonomy": autonomy_mode(unit),
+                              "owner_active": owner_running(unit), "sources": unit["sources"], "accepted": accepted,
+                              "report_ref": unit.get("final_report"),
                               "integrity": integrity, "current_stage": current["id"] if current else None,
                               "current_status": current["status"] if current else "all_rounds_accepted",
-                              "pending": short_record(current["pending"]) if current and current["pending"] else None,
-                              "latest_revision": [short_revision(value) for value in current["history"][-1:]] if current else [], "handover": unit["handover"],
-                              "next": "先复核待审结果；否则编译当前工作包并真实续派原代理，不能重复已接受轮"}
+                              "pending": short_record(current["pending"], detail, record_reference(root, state, unit, current, "pending")) if current and current["pending"] else None,
+                              "latest_revision": [short_revision(value, detail) for value in current["history"][-1:]] if current else [],
+                              "handover": unit["handover"] if detail == "full" else {"count": len(unit["handover"]), "json_pointer": f"/units/{key}/handover"},
+                              "next": ("绑定owner自主检查/继续当前轮；实际中断需要宿主真实恢复调用后登记dispatch，不重复已接受轮"
+                                       if autonomy_mode(unit) == "unit" else "先复核待审结果；否则真实续派原代理；可显式adopt-owner接管，不改历史事件")}
     return result
 
 
@@ -903,7 +1251,8 @@ def candidates(root: Path, state: dict, finding: str | None = None) -> dict:
                     mapping[value["target"]] = value
     files = [snapshot(root, item["draft"]) for item in mapping.values()]
     result = {"status": "candidate_group", "mapping": mapping, "files": files,
-              "publication_authorized_by_script": False, "scientific_verification": "coordinator_recorded"}
+              "publication_authorized_by_script": False,
+              "scientific_verification": "attributed_stage_reviews; self_check_is_not_independent_review"}
     if finding:
         state["integration"] = {**result, "finding": text(finding, "成组语义链接/知识增量检查"), "at": utc_now()}
     return result
@@ -914,8 +1263,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", type=Path, default=default_root())
     sub = parser.add_subparsers(dest="command", required=True)
     names = ("init", "status", "next", "recovery", "dispatch", "submit", "accept", "revise", "reopen",
-             "tasks", "repeat", "inputs", "windows", "constraints", "interrupt", "candidates")
-    required_unit = {"next", "dispatch", "submit", "accept", "revise", "reopen", "tasks", "repeat", "inputs", "windows", "interrupt"}
+             "tasks", "repeat", "inputs", "windows", "constraints", "interrupt", "candidates",
+             "start-owner", "adopt-owner", "step", "report", "resource")
+    required_unit = {"next", "dispatch", "submit", "accept", "revise", "reopen", "tasks", "repeat", "inputs", "windows", "interrupt", "start-owner", "adopt-owner", "step", "report", "resource"}
     for name in names:
         command = sub.add_parser(name)
         command.add_argument("--run", required=True)
@@ -923,6 +1273,22 @@ def main(argv: list[str] | None = None) -> int:
             command.add_argument("--unit", required=True)
         elif name == "recovery":
             command.add_argument("--unit")
+        if name in {"next", "status", "recovery"}:
+            command.add_argument("--detail", choices=("compact", "full"), default="compact")
+        if name in {"start-owner", "adopt-owner"}:
+            command.add_argument("--event", type=Path, required=True)
+        if name == "step":
+            command.add_argument("--agent-id", required=True)
+            command.add_argument("--operation", choices=("begin", "submit", "accept", "revise"), required=True)
+            command.add_argument("--payload", type=Path)
+        if name == "report":
+            group = command.add_mutually_exclusive_group()
+            group.add_argument("--report", type=Path)
+            group.add_argument("--finding", type=Path)
+        if name == "resource":
+            command.add_argument("--kind", choices=("guide", "protocol", "template"), required=True)
+            command.add_argument("--index", type=int, default=0)
+            command.add_argument("--section", action="append", default=[])
         for verb, option in (("init", "plan"), ("dispatch", "event"), ("submit", "result"),
                              ("accept", "finding"), ("revise", "finding"), ("tasks", "decisions"),
                              ("constraints", "update"), ("inputs", "files"), ("windows", "locations")):
@@ -957,9 +1323,17 @@ def main(argv: list[str] | None = None) -> int:
                 if state.get("schema_version") != 2 or state.get("run_id") != run:
                     raise ValueError("workflow版本/运行ID不符；旧记录保留，不静默迁移")
                 command = args.command
-                if command == "status": value = status(root, state)
-                elif command == "next": value = next_packet(root, state, args.unit)
-                elif command == "recovery": value = recovery(root, state, args.unit)
+                if command == "status": value = status(root, state, args.detail)
+                elif command == "next": value = next_packet(root, state, args.unit, args.detail)
+                elif command == "recovery": value = recovery(root, state, args.unit, args.detail)
+                elif command == "start-owner": value = start_owner(root, state, args.unit, read_json(inside(root, args.event)))
+                elif command == "adopt-owner": value = adopt_owner(root, state, args.unit, read_json(inside(root, args.event)))
+                elif command == "step": value = owner_step(root, state, args.unit, args.agent_id, args.operation,
+                                                          read_json(inside(root, args.payload)) if args.payload else None)
+                elif command == "report": value = final_report(root, state, args.unit,
+                                                               read_json(inside(root, args.report)) if args.report else None,
+                                                               read_json(inside(root, args.finding)) if args.finding else None)
+                elif command == "resource": value = resource_packet(state, args.unit, args.kind, args.index, args.section)
                 elif command == "dispatch": value = dispatch(root, state, args.unit, read_json(inside(root, args.event)))
                 elif command == "submit": value = submit(root, state, args.unit, read_json(inside(root, args.result)))
                 elif command in {"accept", "revise"}: value = review(root, state, args.unit, read_json(inside(root, args.finding)), command == "accept")
@@ -973,7 +1347,9 @@ def main(argv: list[str] | None = None) -> int:
                 else: value = candidates(root, state, args.finding)
                 if archived:
                     value = archive_view(root, run, value, command)
-            readonly = args.command in {"status", "next", "recovery"} or (args.command == "candidates" and not args.finding)
+            readonly = args.command in {"status", "next", "recovery", "resource"} or (
+                args.command == "report" and not args.report and not args.finding) or (
+                args.command == "candidates" and not args.finding)
             if not readonly:
                 state["updated"] = utc_now()
                 write_json(state_path(root, run), state)

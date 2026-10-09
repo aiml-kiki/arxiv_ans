@@ -1,8 +1,10 @@
-# 偏好不是调用事实；宿主工具、实际可用模型及实际事件是执行记录依据。
-schema_version: 2
+# 这是请求偏好；实际宿主调用/配置是事实。脚本不调用模型。
+schema_version: 3
 allow_implicit_invocation: false
-max_workers: 2
-max_depth: 1
+max_workers: 2 # workflow 单元 owner 上限
+max_owner_units: 2
+max_active_subagents: 3 # owner + 局部助手；仍服从宿主更小的全树上限
+max_depth: 2
 fork_history: none
 script_dispatches_agents: false
 profiles:
@@ -11,17 +13,33 @@ profiles:
   organize: {model: gpt-6-luna, reasoning_effort: high}
   explain: {model: gpt-6-sol, reasoning_effort: low}
   maintain: {model: gpt-6-sol, reasoning_effort: medium}
+  compose: {model: gpt-6-sol, reasoning_effort: medium}
   bounded_compare: {model: gpt-6-sol, reasoning_effort: medium}
   deep_read: {model: gpt-6-sol, reasoning_effort: high}
   deep_compare: {model: gpt-6-sol, reasoning_effort: high}
   trace: {model: gpt-6-sol, reasoning_effort: high}
   critic: {model: gpt-6-sol, reasoning_effort: high}
+task_routes:
+  deterministic_parse_hash_links_arithmetic: script
+  source_identity_bounded_lookup: locate
+  bounded_numeric_source_check: audit
+  first_pass_orientation: organize
+  mechanism_learning_proof: deep_read
+  alternatives_author_defense: critic
+  cross_paper_evolution_evidence: deep_compare
+  knowledge_dedup: organize
+  knowledge_semantic_revision: maintain
+  controlled_composition: compose
 dispatch:
-  independent_multiple_papers: one_reader_per_paper_in_batches
-  single_paper: delegate_when_context_or_reasoning_isolation_helps
-  current_round_only: true
-  same_reader_actual_followups: true
-  followup_after_coordinator_acceptance: true
+  independent_multiple_papers: one_autonomous_owner_per_paper
+  comparison_trace_knowledge: one_autonomous_owner_per_unit
+  initial_task_scope: entire_unit_goal_current_stage_resources
+  parent_receives: final_report_or_actionable_exception
+  parent_does_not_receive: intermediate_answers_evidence_coverage_logs
+  unit_internal_checkpoints: true
+  guidance_loads_current_stage_only: true
+  helper_when: bounded_cross_tier_task_benefit_exceeds_handoff_cost
+  helper_continuity: reuse_same_helper_for_related_same_tier_work
   replacement_requires_reason_and_handover: true
   main_fallback_requires_concrete_reason: true
   exceptions: [user_single_agent, delegation_prohibited, agent_tool_unavailable, quota_failure, dependency, disproportionate_handoff_cost]
@@ -32,32 +50,40 @@ rounds:
   trace: [T0, T1, T2, T3, T4, T5, T6]
   knowledge: [K1, K2, K3, K4]
 context:
-  first_dispatch: active_skill_and_current_round
-  later_dispatch: current_guide_accepted_interfaces_actual_sources_user_corrections
-  composition_only: one_template_and_obsidian_rules
-  do_not_load: [all_48_tasks, future_round_guides, full_parent_history, maintenance_design]
-  fresh_instruction_tokens_soft_target: [1000, 2000]
+  parent_bootstrap: task_dag_source_identity_constraints_final_targets
+  owner_bootstrap: active_skill_unit_owner_contract_routing_once
+  later_stage: current_guide_new_source_windows_needed_interfaces
+  composition_only: one_template_writing_obsidian_once
+  packet_default: paths_hashes_current_tasks
+  full_packet: explicit_audit_only
+  do_not_load: [all_48_tasks, future_round_guides, full_parent_history, all_intermediate_rounds, full_manifest_text, maintenance_design]
+  reread_only_for: [context_loss, changed_content_hash, targeted_correction, decisive_source_verification]
+  instruction_tokens_soft_target: [1000, 2000]
   source_budget: actual_scientific_need_not_instruction_target
   missing_token_telemetry: null
 model_resolution:
   source_of_truth: runtime_tool_capabilities
-  reader_initial_profile: full_task_need
-  preserve_instance_if_followup_cannot_change_model: true
+  owner_profile: hardest_core_reasoning_of_unit
+  stage_route_is_preference_not_switch: true
+  same_instance_switch_unsupported: bounded_helper_or_honest_same_model_fallback
+  no_helper_for_each_leaf_or_trivial_stage: true
   root_model_is_not_changed_by_yaml: true
-  unavailable_preference: map_by_capability_or_record_main_fallback
-  quota_failure: save_checkpoint_and_retry_when_authorized_or_available
+  unavailable_preference: map_by_capability_and_record_reason
   never_create_agents_to_evade_limits: true
 concurrency:
-  limit_applies_to_all_active_agent_roles: true
+  capacity_source: host_live_agent_tree
+  count: all_active_owners_and_helpers
+  no_helper_slot: owner_executes_or_waits
   independent_source_io: bounded_async_or_threads
-  independent_pdf_parsing: bounded_process_pool_when_needed
-  shared_workflow_and_publication: one_coordinator_writer
-  shared_knowledge_update: sequential_integration
-  cache_hit: no_parser_process
+  independent_pdf_parsing: bounded_process_pool_only_on_cache_miss
+  workflow_updates: serialized_by_script_lock_unit_owned
+  publication_index_common_knowledge: one_writer
 review:
-  ordinary_omission: same_author_targeted_revision
-  hard_local_gap: bounded_independent_audit_when_useful
-  repeated_semantic_error: inspect_packet_sources_acceptance_and_retention_before_more_prompt
+  intermediate: owner_source_check_or_bounded_local_review
+  review_kinds: [self_check, independent_review, final_review]
+  self_check_is_independent_review: false
+  parent_review: final_candidate_only
+  ordinary_omission: same_owner_targeted_revision
   script_semantics: not_scientifically_verified
   default_user_interaction: complete_candidate_group
-  guided_reading: stop_at_pass_boundary_and_discuss
+  guided_reading: interactive_pass_boundary_discussion

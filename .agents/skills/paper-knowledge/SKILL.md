@@ -14,7 +14,7 @@ description: 显式运行 paper-knowledge 或由已授权 paper 工作流调用�
 | K3 / 确需新解释 | [explanation](references/explanation.md) | 独立机制、有效例子与适用边界 |
 | K4 | [composition](references/composition.md) | 保留用户原话及旧有效内容的更新组 |
 
-只读当前指南与必要 [更新协议](../paper/references/protocol-update.md)/[证据协议](../paper/references/protocol-claim-evidence.md)片段。无需新增解释时 K3 有理由跳过，不机械造知识。单篇任务整理可由协调者承担；多阅读者只提候选，统一在同一正式快照顺序去重/整合，不并发覆盖共同页。
+由一位知识 owner 按 [自主执行契约](../paper/references/unit-owner.md) 自主完成 K1→K4及内部核对，只交最终更新组/不变依据。默认读取上游最终结论、知识线索和受影响正式页，缺口才定向取历史产物。无需新解释时 K3 有理由跳过。共同知识在同一快照顺序去重整合，不由多阅读者并发覆盖。
 
 迁移价值来自能独立解决问题、解释机制并判断边界；单篇专有机制标明专有条件。导航反链不是语义依赖，支持数不自动提升裁决。新证据只修改真正受影响的判断/段落，变版只触发复核。未解问题有具体位置、状态、竞争解释与后续区分依据，不默认另建公开问题卡目录。
 

@@ -1,51 +1,38 @@
-# 协调者：真实交接与短轮次
+# 主会话：启动完整单元，接收最终结果
 
-仅开始委派、续派或恢复时加载；各作者收到当前轮工作包，不需要整份执行指南。阶段与叶任务契约由 `assets/schemas/` 维护。脚本登记事实、检查依赖及哈希，科学接受由协调者判断。
+仅主会话在委派/恢复时加载本文件及路由；单元代理只加载自己的 [自主执行契约](unit-owner.md)。脚本保存顺序、身份和哈希，不调用模型，也不证明科学成立。
 
-## 从当前目标构建任务图
+## 任务归属
 
-1. 定位现有正式页、固定来源、未完成 run/待审提案和有效授权。缓存核验通过就复用；缺身份/材料才走 paper-fetch。研究范围不明且会改变对象时才澄清。
-2. 选必要能力。每篇独立完整精读为一个 read unit；给定论文比较依赖所需 read 结果，方向追溯不自动精读全部候选。知识候选统一在一个正式快照上去重、顺序更新。
-3. 在 `workflow init` 的计划中明确 unit、输入、目标和依赖。不把所有 48 个叶任务交给代理；不适用任务有实际理由。经验/理论任务 B4/B5 在 R2b 前经 `workflow tasks` 明确。
-4. 默认同时最多两位子代理，覆盖所有角色。下载/查询用限速并发；独立 PDF 解析可用文件级进程池；共享索引、状态、提案和正式写入保持协调单写者。缓存全命中不启动解析池。
+1. 主会话确定用户目标、来源身份、授权、目标路径及单元依赖；不提前阅读每篇的科学指南、原文或中间产物。每篇论文一个独立 read owner；比较、追溯、集中知识更新各有自己的 owner。
+2. 初始化计划 `autonomy: unit`。首次 `spawn_agent` 使用 `fork_turns: none`，只给真实 run/unit、库根、能力入口、来源/目标、用户约束和完整交付目标。不要给“只做 R1 后结束”的任务。
+3. 真实 spawn 后用 `workflow start-owner --event` 登记一次；初始任务注明代理须等到该登记绑定本人真实 ID 后才写阶段状态，短暂登记时差不构成续派请求。代理取得拥有权后在自己的会话执行所有阶段，单元内自查、局部复核和返工不回主会话。
+4. 主会话等待完成或异常，只查 `workflow status` / `workflow report` 简包。比较者直接从文件读取两篇的最终接口和必要证据；主会话不先读中间结果再转述一遍。知识整合者顺序去重，只有其本人写共同知识候选。
+5. 主会话只审最终候选、具体差异、决定性结论的来源与真实检查状态；普通遗漏定向交原 owner 修正。结构检查失败优先读诊断，不把全库正文放进主上下文。最终授权/冲突保护/正式写入与 finish 仍由主会话单写者执行。
 
-知识链接可在成文前接入：知识单元依赖单篇 R3b 或比较 M3 的已接受科学结果，先完成候选/影响决策，再将稳定页名、关系与必要解释用 `workflow inputs --stage R4/M4` 登记给原作者；知识成文不重复接管该作者的论文/对比目标。只需处理已有知识时也先给作者相关正式快照。每个最终目标只有一个候选作者，协调者合并顺序明确，不能让两位作者各交同页后覆盖其一。成文后才出现实质新认识，则按受影响范围重开；导航整理不成为虚假科学更新。
+科学阶段记录的接受是单元内部质量门，不是主会话逐轮批准或独立评审。主会话的最终审阅也不能代表真实实验复现。用户主动带读时才设 `autonomy: interactive`，按遍交用户讨论；不要把该例外变成默认研究模式。
 
-## 当前轮真实调用
+## 上下文与资源
 
-`workflow next` 返回当前轮和直达指南。协调者仅加：唯一目标、当前任务 IDs、用户最新约束、固定来源窗口、接受产物版本/关键接口、独占输出路径、接受条件及交回要求。只加载指定 `guide_section`，不得把后续小节当当前指令。约 1,000–2,000 新指令 token 为软设计预算；没有 tokenizer 就记未测，不能为预算删科学条件。
+- 主会话不加载能力入口的全部指南，不运行 `next --detail full`，不读阶段 md/json/累计证据，不接收逐轮长消息。最终报告给候选路径/哈希、固定来源、简要结论、知识线索和未决/异常；详细结果仍落盘可追溯。
+- `next`、`recovery` 默认只给当前任务、资料入口及接受产物路径/哈希。正文由需要它的代理按问题读取；`--detail full` 仅明确审计/恢复缺口使用。
+- 独立来源 IO 限速并发；多个独立 PDF 缓存未命中时才用文件级进程池。模型不抄写确定性解析/数值核对程序。
+- 默认最多两位单元 owner，宿主容量允许时留一位局部助手；实际所有活跃代理计入宿主全树上限。没有助手槽就在 owner 内完成或排队，不为模型分档无限增代理。
+- 不同 owner 只修改各自独占目录和本人 unit 的状态，workflow 每次读改写由脚本锁串行保护。索引、候选组和正式提交仍单写者；并发不得覆盖共同正文。
 
-- 第一次派发用宿主实际 spawn 工具。同一 unit 后续使用**同一 agent 的真实 follow-up**，每轮结束后交回控制。协调者先检查当前科学答案和决定性来源，accept 或给具体 revise finding，再续派下一轮。
-- `workflow dispatch` 在真实调用后登记 `observed: true`、mode、agent ID、tool、call ID/实际事件记录。不能提前把“预计调用”写成实际执行；不可把读取指南记作 spawn。
-- 作者按 workflow 契约交 `result` 和实际正文产物；无具体证据的“已完成”不是接受依据。接受绑定本轮版本/哈希；相关修正使必要依赖阶段重开，不全量重读。
-- 三遍之间始终有真实边界；第二遍可机制、学习/证明、证据分子轮，第三遍可替代/辩护、验证/细节分子轮。短文可以合并同一遍紧密任务，不能合并三遍。
-- 比较者用接受的单篇结果及关键双端来源，缺口只给原阅读者定向补证；父会话不重复全文精读。普通缺项原作者补，困难局部才委派有边界核验；自查不是独立评审。
+## 中断与异常
 
-### 阶段交付接口
+优先恢复原 owner。只把简版 `recovery --unit` 地址与新用户约束交它，已接受正文不重复发到主会话；原实例不可用时记录原因/真实新 ID，恢复同一逻辑 unit。既有逐轮运行不伪造历史：真实中断后用 `adopt-owner --event` 显式接管；然后真实恢复原代理并用 `dispatch mode:followup` 登记，待审结果恢复另加 `resume_review:true`。接管本身不代表宿主调用，此后在同 owner 内继续。修正只重开受影响阶段。
 
-正文写在 `workflow next` 返回的独占绝对路径，对应 `.research/work/<run>/units/<unit>/results/<stage>.md`；JSON 封装另交 `submit`。本轮必需字段为 `stage`、`answers`（具体 question/answer/task_ids）、`evidence`（真实 path/locator）、`coverage`（实际 read/image_checked/not_covered 及原因）、`judgment_changes`、`critical_details`、`gaps`。answers/evidence/coverage 非空，前三者之外的列表确无内容时可以为空；不得用空字段代替科学答案。正文只存结果/证据及理解变化，不存逐步思考。
+只有需要用户缺失信息、权限、跨单元接口冲突或实际额度/平台故障才向主会话报异常：具体阻塞、已完成范围、恢复入口及所需决定；不夹带所有过程材料。脚本无法隔离已经进入主会话的历史，但下一轮不再把它 fork 给代理。
 
-成文轮另交 `candidates` 的 draft/target 映射：draft 位于 `.research/drafts/<run>/units/<unit>/`，target 仅正式三目录。协调者 accept/revise 的 finding 给实际 reviewer、summary 和具体 question/finding/locator checks；返工另给 required_changes。字段事实源为 `assets/schemas/workflow-contract.json` 的**当前对象**，不向作者加载完整 48 行或未来阶段字段。
-
-## 模型与恢复
-
-实际工具能力优先于 routing.yaml 偏好。完整阅读初次按全任务需要选择模型/推理等级；宿主 follow-up 不支持切换模型时，同实例不虚构“先便宜后升级”。复杂比较/谱系按其需要初次选高档；确定性操作用脚本，简单定位或数值核验可局部低成本代理。主会话不会因 YAML 自动切换。
-
-持久恢复记录保留接受产物哈希、接口/关键值及作用、条件/例外、实际覆盖、用户修正、开放问题、授权和下一轮。不存完整逐步思考、原文副本或全部旧工具输出。压缩后核对恢复包及正式页最新修改；实际 agent 不可恢复时记录替代原因和真实新 ID，保持同一逻辑 unit，不称物理代理未变。
-
-用户“继续”从有效目标和接受状态接续；状态问题简答后继续。真实额度/平台故障按宿主规则恢复重试，不反复建代理规避限制。新约束只重开受影响阶段；用户明确取消/替换才换目标。
-
-## CLI（库根运行，JSON 放文件）
+## 最小 CLI
 
 ```sh
 uv run python .agents/skills/paper/scripts/research.py --root . workflow init --run <run> --plan <计划.json>
-uv run python .agents/skills/paper/scripts/research.py --root . workflow next --run <run> --unit <unit>
-uv run python .agents/skills/paper/scripts/research.py --root . workflow dispatch --run <run> --unit <unit> --event <实际事件.json>
-uv run python .agents/skills/paper/scripts/research.py --root . workflow submit --run <run> --unit <unit> --result <本轮结果.json>
-uv run python .agents/skills/paper/scripts/research.py --root . workflow accept --run <run> --unit <unit> --finding <具体核验.json>
+uv run python .agents/skills/paper/scripts/research.py --root . workflow start-owner --run <run> --unit <unit> --event <真实spawn.json>
+uv run python .agents/skills/paper/scripts/research.py --root . workflow report --run <run> --unit <unit>
 uv run python .agents/skills/paper/scripts/research.py --root . workflow recovery --run <run> --unit <unit>
 ```
 
-尖括号是文档占位符，实际用真实路径/ID；CLI `--help` 及 schema 是字段事实源。返工用 `revise`，失效用 `reopen`，查询迭代用 `repeat`，新约束用 `constraints`。不同意接受时明确缺哪项科学答案、去哪一来源、什么结果可接受；不能只写“更深入”。
-
-最终科学结果进入知识影响检查，再按审阅协议形成一组候选；具体授权范围内 publish，完成后 finish。过程阶段不自动成为正式页，持久研究证据不因 finish 丢弃。
+字段以当前 `--help` 为准；实际调用填真实 ID、模型请求和事件，运行时未暴露配置记 null。候选仍按 [审阅协议](review-publish.md)展示和提交，不能把内部自主执行当作正式页写入授权。

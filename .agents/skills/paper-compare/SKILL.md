@@ -14,7 +14,7 @@ description: 显式运行 paper-compare 或由已授权 paper 工作流调用时
 | M3 | [evidence](references/evidence.md) | 逐命题可比性、争议、选择/反转与区分观察 |
 | M4 | [composition](references/composition.md) | 连贯对比候选与双端强判断回查 |
 
-第一次只派 M1，接受后由同一 agent 真实 follow-up；协调者执行 [交接契约](../paper/references/execution.md)。作者只读当前指南、必要 [证据协议](../paper/references/protocol-claim-evidence.md)片段与相关来源。缺单篇接口/证据时把具体问题及窗口交原阅读者，不因一个空格重新全文精读。
+一位独立比较 owner 按 [自主执行契约](../paper/references/unit-owner.md) 完成 M1→M4，内部逐阶段保存/核对/返工，只交最终结果。默认直接读取单篇最终接口与必要双端来源，不加载所有中间轮正文；缺接口再定向补证，不由父会话逐轮转述。
 
 共同情境是机制分析，须标教学推演；性能优劣/因果结论必须另核数据、协议、预算和统计支持。技术演变既讲旧方案为何合理与瓶颈条件，又讲新接口改变、新能力/成本/假设；没有双端依据就保留平行、分叉或未知，不替作者造动机。
 

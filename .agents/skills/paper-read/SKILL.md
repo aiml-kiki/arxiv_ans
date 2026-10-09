@@ -19,7 +19,7 @@ description: 显式运行 paper-read 或由已授权 paper 工作流调用时，
 | R3b / 第三遍 | [reconstruction 的区分验证与细节保留](references/reconstruction.md#区分验证与细节保留) | 可观察区分方案及必留细节落点 |
 | R4 / 成文 | [composition](references/composition.md) | 图与正文一致的完整论文候选 |
 
-首次派发只给 R1；接受后同一 agent 实际 follow-up，不能同次自审自续生成三遍。长文同一遍内可拆轮；三遍边界不可合并。委派/恢复由协调者加载 [执行契约](../paper/references/execution.md)，作者只读当前轮指定指南小节和必要 [来源](../paper/references/protocol-source.md)/[证据](../paper/references/protocol-claim-evidence.md)片段。
+首次派发给一篇论文的完整目标，由独立 owner 读 [自主执行契约](../paper/references/unit-owner.md)。按上表逐阶段保存→来源回查/自查→接受或返工→再加载下一指南；所有阶段在本人会话完成，只把最终候选/摘要或异常交父会话。长文可同遍拆轮，三遍不能在初始 prompt 中合并要求；自查不冒充独立审查。
 
 经验/理论适配在 R2b 选择；[系统](assets/modules/system.md)、[数据集与测量](assets/modules/measurement.md)、[综述](assets/modules/survey.md)仅论文涉及且当前问题需要时加载，不把全部检查施加每篇。第二遍/第三遍共同保留改变计算、可见性、训练/证明、状态、成本、验证或取舍的细节。
 
