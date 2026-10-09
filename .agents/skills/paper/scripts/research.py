@@ -53,12 +53,12 @@ def main(argv=None):
             options = command.parse_args(remaining)
             value = search(root, options.query, options.limit)
         elif args.command == 'check':
-            from lib.notes import check
+            from lib.notes import check, check_changes
             from lib.core import read_json
             command = argparse.ArgumentParser(prog='research.py check')
             command.add_argument('--changes', type=Path)
             options = command.parse_args(remaining)
-            value = check(root, read_json(root / options.changes) if options.changes else None)
+            value = check_changes(root, read_json(root / options.changes)) if options.changes else check(root)
         elif args.command == 'publish':
             from lib.publishing import publish
             command = argparse.ArgumentParser(prog='research.py publish')
@@ -72,8 +72,9 @@ def main(argv=None):
             command = argparse.ArgumentParser(prog='research.py finish')
             command.add_argument('--run', required=True)
             command.add_argument('--discard', action='store_true')
+            command.add_argument('--abandon-reason', help='用户明确废弃中断运行的授权及原因；不伪造科学接受')
             options = command.parse_args(remaining)
-            value = finish(root, options.run, options.discard)
+            value = finish(root, options.run, options.discard, options.abandon_reason)
         print(json.dumps(value, ensure_ascii=False, indent=2, default=str))
         return 1 if isinstance(value.get('errors'), int) and value['errors'] else 0
     except (ValueError, OSError, KeyError, TypeError, sqlite3.Error, yaml.YAMLError,

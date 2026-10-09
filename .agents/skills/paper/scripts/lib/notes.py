@@ -515,6 +515,7 @@ def check(root, changes=None):
         except ValueError as exc:
             errors.append({'path': rel, 'message': str(exc)})
         for destination, wiki, location in links:
+            target = None
             try:
                 if wiki:
                     target = wiki_target(root, path, destination, overrides)
@@ -525,7 +526,8 @@ def check(root, changes=None):
                     raise ValueError('更新删除了仍被引用的目标: ' + destination)
                 validate_link(root, path, destination, pdf_pages, overrides, wiki=wiki)
             except (OSError, ValueError, TypeError, yaml.YAMLError) as exc:
-                errors.append({'path': rel, 'message': location + '：' + str(exc)})
+                errors.append({'path': rel, 'message': location + '：' + str(exc),
+                               **({'target': str(target.relative_to(root))} if target is not None else {})})
     for path in sorted((root / '专题').glob('*.base')):
         try:
             data = yaml.safe_load(path.read_text(encoding='utf-8'))
@@ -571,6 +573,47 @@ def check(root, changes=None):
     return {'notes': len(docs), 'errors': len(errors), 'warnings': len(warnings),
             'issues': errors + warnings,
             'limitation': '机械校验不证明科学支持、实际阅读或Obsidian界面效果。'}
+
+
+
+def check_changes(root, changes, baseline=None, *, actual=False):
+    """Block new/affected errors; report unchanged unrelated debt separately."""
+    if not isinstance(changes, dict) or not changes:
+        raise ValueError('改动范围校验需要非空正式路径→正文/null映射')
+    root = Path(root).resolve()
+    baseline = check(root) if baseline is None else baseline
+    proposed = check(root) if actual else check(root, changes)
+    key = lambda issue: json.dumps(issue, ensure_ascii=False, sort_keys=True)
+    known = {key(issue) for issue in baseline['issues']}
+    affected = {str(inside(root, path).relative_to(root)) for path in changes}
+    source_paths = set()
+    for content in changes.values():
+        if content is None:
+            continue
+        try:
+            match = re.match(r'\A---\r?\n(.*?)\r?\n---(?:\r?\n|$)', content, re.S)
+            meta = yaml.safe_load(match[1]) if match else {}
+            if isinstance(meta, dict) and meta.get('source'):
+                source_paths.add(source_target(root, meta['source']))
+        except (OSError, ValueError, TypeError, yaml.YAMLError):
+            pass  # Full candidate validation supplies the blocking diagnostic.
+    for path in manifests(root):
+        try:
+            data = read_json(path)
+            if inside(root, data['source_path']) in source_paths:
+                affected.add(str(path.relative_to(root)))
+        except (OSError, ValueError, KeyError, TypeError):
+            affected.add(str(path.relative_to(root)))  # Unknown source corruption is not waived.
+    blockers, historical = [], []
+    for issue in proposed['issues']:
+        touches = issue.get('path') in affected or issue.get('target') in affected
+        global_contract = issue.get('message', '').startswith('显式语义') or '正式id重复' in issue.get('message', '')
+        (blockers if touches or global_contract or key(issue) not in known else historical).append(issue)
+    return {**proposed, 'errors': len(blockers), 'issues': blockers,
+            'validation_scope': 'changed_pages_and_affected_incoming_links',
+            'full_errors': proposed['errors'], 'historical_issues': historical,
+            'historical_errors': len(historical),
+            'limitation': proposed['limitation'] + ' 未变化且与本次改动无关的历史错误仍单列；这不等于全库通过。'}
 
 
 def search(root, query, limit=8):

@@ -9,7 +9,7 @@ import re
 import shutil
 
 from .core import atomic_text, digest, inside, locked, read_json, safe_id, utc_now, write_json
-from .notes import FOLDERS, check, rebase_markdown, validate_note_frontmatter, visible_markdown, wiki_parts, wiki_target
+from .notes import FOLDERS, check, check_changes, rebase_markdown, validate_note_frontmatter, visible_markdown, wiki_parts, wiki_target
 
 
 def target_path(root, value):
@@ -168,17 +168,18 @@ def stage(root, changes, proposal, run=None, summary=None, origins=None):
             entries.append({'path': str(target.relative_to(root)),
                             'before': digest(target.read_bytes()) if target.exists() else None,
                             'content': content})
-        report = check(root, {entry['path']: entry['content'] for entry in entries})
+        report = check_changes(root, {entry['path']: entry['content'] for entry in entries})
         if report['errors']:
             raise ValueError('正式/入链预检失败: ' + json.dumps(report['issues'], ensure_ascii=False))
         record = {'schema_version': 1, 'proposal': proposal, 'run': run or proposal,
                   'entries': entries, 'digest': payload_digest(entries), 'revision': 1,
                   'status': 'pending', 'created_at': utc_now(), 'summary': summary,
-                  'origins': origins or {}, 'retired_preview_hashes': {}}
+                  'origins': origins or {}, 'retired_preview_hashes': {}, 'validation': report}
         configure_views(record)
         write_views(root, record)
         return {'proposal': proposal, 'digest': record['digest'], 'revision': 1,
                 'overview': record['overview'], 'previews': record['previews'],
+                'historical_errors': report['historical_errors'], 'validation_scope': report['validation_scope'],
                 'limitation': '机械预检已完成；科学核验和实际授权由协调者依据真实结果处理。'}
 
 
@@ -264,7 +265,7 @@ def import_edits(root, proposal, acknowledge_retired=None):
                     content = rebase_markdown(root, content, preview, target_path(root, entry['path']), mapping)
                     updated['content'] = rewrite_wiki(root, content, preview, mapping)
             entries.append(updated)
-        check_report = check(root, {entry['path']: entry['content'] for entry in entries})
+        check_report = check_changes(root, {entry['path']: entry['content'] for entry in entries})
         if check_report['errors']:
             raise ValueError('编辑后的候选存在完整性问题，保留原视图: ' +
                              json.dumps(check_report['issues'], ensure_ascii=False))
@@ -282,6 +283,7 @@ def import_edits(root, proposal, acknowledge_retired=None):
                     path: {'sha256': digest(raw), 'content': raw.decode('utf-8')}
                     for path, raw in retired_snapshots.items()}})
         record['entries'] = entries
+        record['validation'] = check_report
         record['digest'] = payload_digest(entries)
         record['revision'] += 1
         record['edited_at'] = utc_now()
@@ -305,7 +307,8 @@ def publish(root, proposal, approved_digest, authorization):
         if status['formal_conflicts']:
             raise ValueError('正式页在审阅期间改变，保留修改并重新合并: ' +
                              json.dumps(status['formal_conflicts'], ensure_ascii=False))
-        report = check(root, {entry['path']: entry['content'] for entry in record['entries']})
+        baseline_report = check(root)
+        report = check_changes(root, {entry['path']: entry['content'] for entry in record['entries']}, baseline=baseline_report)
         if report['errors']:
             raise ValueError('正式/入链预检失败: ' + json.dumps(report['issues'], ensure_ascii=False))
         history = inside(root, f'.research/records/commits/{proposal}')
@@ -339,7 +342,7 @@ def publish(root, proposal, approved_digest, authorization):
                 else:
                     atomic_text(path, entry['content'])
                 changed.append(path)
-            report = check(root)
+            report = check_changes(root, {entry['path']: entry['content'] for entry in record['entries']}, baseline=baseline_report, actual=True)
             if report['errors']:
                 raise ValueError('提交后完整性检查失败: ' + json.dumps(report['issues'], ensure_ascii=False))
         except Exception as exc:
@@ -361,6 +364,7 @@ def publish(root, proposal, approved_digest, authorization):
         record['status'] = 'applied'
         record['applied_at'] = utc_now()
         record['authorization'] = authorization.strip()
+        record['validation'] = report
         commit = {key: record[key] for key in ('proposal', 'run', 'digest', 'revision', 'applied_at', 'authorization')}
         commit['entries'] = [{'path': entry['path'], 'before': entry['before'],
                              'after': digest(entry['content']) if entry['content'] is not None else None}
@@ -438,10 +442,12 @@ def cleanup_archived(root, durable, journal):
             'preserved': ['固定来源与版本', '来源定位及覆盖', '查询与筛选集合', '接受产物与判断更新', '完整审阅修订与提交记录']}
 
 
-def finish(root, run, discard_unpublished=False):
+def finish(root, run, discard_unpublished=False, abandon_reason=None):
     """Keep provenance, queries, evidence and cognitive updates; remove only approved temporary material."""
     root = Path(root).resolve()
     safe_id(run)
+    if abandon_reason is not None and not str(abandon_reason).strip():
+        raise ValueError("废弃中断运行需要具体的用户授权及原因")
     with locked(root, f'workflow:{run}'), locked(root, 'review-publish'):
         durable = managed_directory(root, f'.research/records/runs/{run}')
         journal_path = durable / 'archive.json'
@@ -464,14 +470,21 @@ def finish(root, run, discard_unpublished=False):
         data = read_json(state) if state.is_file() else None
         if work.exists() and data is None:
             raise ValueError('工作目录没有可核验的新版状态，保留它而不推测归属')
+        if abandon_reason is not None and data is None:
+            raise ValueError('没有当前工作流状态，不能废弃推测归属的文件')
         if not records and data is None:
             raise ValueError('没有新版研究状态或已处理提案；旧待审稿和来源草稿保留')
         if data is not None:
             if data.get('schema_version') != 2 or data.get('run_id') != run:
                 raise ValueError('不是当前运行的新版状态，不清理')
+            if abandon_reason is not None:
+                if any(unit.get('owner_active') or any(stage.get('status') in {'executing', 'awaiting_review'} for stage in unit['rounds']) for unit in data['units'].values()):
+                    raise ValueError('仍有执行中的单元；先真实中断代理并登记workflow interrupt，再废弃运行')
+                data['abandonment'] = {'at': utc_now(), 'reason': str(abandon_reason).strip(),
+                                       'scientific_status_preserved': True}
             from .workflow import candidates as workflow_candidates
-            group = workflow_candidates(root, data)
-            if not data.get('integration'):
+            group = workflow_candidates(root, data) if abandon_reason is None else {'mapping': {}}
+            if abandon_reason is None and not data.get('integration'):
                 raise ValueError('先用workflow candidates --finding记录全组语义与知识增量核验')
             for target, candidate in group['mapping'].items():
                 bound = [record for record in records if record.get('origins', {}).get(target) == {
@@ -508,13 +521,16 @@ def finish(root, run, discard_unpublished=False):
         if data is not None:
             cleanup.extend([work, managed_directory(root, f'.research/drafts/{run}'),
                             managed_directory(root, f'.research/cache/runs/{run}')])
+            # Explicit abandonment retains the complete audit without inventing acceptance.
+            if abandon_reason is not None:
+                archives[work] = durable / 'work'
             # Accepted answers, evidence links and content-addressed histories are research records.
-            for unit in data['units'].values():
+            for unit in (() if abandon_reason is not None else data['units'].values()):
                 for area in ('results', 'versions'):
                     folder = work / 'units' / unit['id'] / area
                     if folder.exists():
                         archives[folder] = durable / 'work' / folder.relative_to(work)
-            for area in ('updates', 'learning', 'recovery'):
+            for area in (() if abandon_reason is not None else ('updates', 'learning', 'recovery')):
                 folder = work / area
                 if folder.exists():
                     archives[folder] = durable / 'work' / area
