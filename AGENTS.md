@@ -28,7 +28,7 @@
 
 主会话只读路由/最终报告，单元代理按当前阶段加载指南、必要协议和来源；成文才加载目标模板。同一上下文已读且未变的资料不重复加载；恢复、补证或版本变化才定向重读。48叶任务由工作流选择，不整表发给阅读者。实际宿主调用、内部checkpoint和自查/独立审查分别记录；脚本不冒充代理调用。
 
-唯一工具入口是 `uv run python .agents/skills/paper/scripts/research.py --root .`，提供 source、search、query、workflow、derive、check、review、publish、finish 和可选 canvas。新计划默认 autonomy:unit，单元 owner 只写本人阶段/独占候选；共享 workflow 由脚本锁串行更新，正式发布和索引仍由主会话单写者。`next/recovery/status/report` 默认精简；完整阶段记录保留在文件，不自动回传主会话。接受绑定实际产物与来源哈希；run 状态在 `.research/work/<run>/workflow.json`。结构/字段校验不能证明论文结论成立。
+论文研究工具入口是 `uv run python .agents/skills/paper/scripts/research.py --root .`，提供 source、search、query、workflow、derive、check、review、publish、finish 和可选 canvas。新计划默认 autonomy:unit，单元 owner 只写本人阶段/独占候选；共享 workflow 由脚本锁串行更新，正式发布和索引仍由主会话单写者。`next/recovery/status/report` 默认精简；完整阶段记录保留在文件，不自动回传主会话。接受绑定实际产物与来源哈希；run 状态在 `.research/work/<run>/workflow.json`。结构/字段校验不能证明论文结论成立。
 
 在Obsidian修改待审候选后先review import并核对新差异；正式提交前重新读目标并保护并发修改。授权来自真实用户及其范围，digest仅绑定内容。
 
@@ -38,6 +38,7 @@
 - 用户授权的代码、技能及配置任务完成后，检查状态和差异，把**属于本次任务**的文件作为独立提交，并及时推送到当前工作分支；长任务在可独立交付的里程碑后同步。同一次任务只需按其授权范围执行，不要求用户再逐步提醒提交。
 - 暂存前核对完整状态、暂存差异、删除和新文件；只暂存本次任务文件，保留之前已有的改动。论文/知识库正式页、附件及 `.research` 受忽略规则保护，只有用户明确要求时才纳入 Git。
 - 使用仓库本地 Git 身份与 `arxiv_ans`，提交说明概括真实改动。首次推送分支时设置上游；推送前核对目标仓库和分支。若远端已有不能快进的提交，先检查并保留双方历史；不强制覆盖。
+- 统一推送调用 `git sync-push --remote origin --branch main`；全局安装不可用时，用 `uv run --no-sync python scripts/git_sync.py --remote origin --branch main`。脚本固定提交、最多三次限时网络尝试，重试时动态解析 IPv4，核对实际 push URL 的目标分支 SHA 后才报成功；认证、权限、非快进等异常不盲目重试。脚本源与安装说明在 `scripts/`；修改源后同步本机 Codex home 的安装副本。
 - 推送失败、认证不可用或 Codex 权限/自动审核未放行时，如实报告具体状态，不得称为已同步。报告提交 SHA、目标分支和推送结果。
 
 不要新增公开的任务/命题/证据卡目录、兼容入口或多代架构。优先更新已有页，知识页仅在用户明确需要或内容复用时提出。不要为每次对话生成报告或掌握度评分。
