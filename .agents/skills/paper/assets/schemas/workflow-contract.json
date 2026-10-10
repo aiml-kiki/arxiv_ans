@@ -1,11 +1,10 @@
 {
   "schema_version": 2,
-  "description": "工作流CLI数据契约与占位示例；记录真实宿主调用与owner内部检查点，不是科学验证器。执行前将示例路径/ID换成真实记录。",
+  "description": "工作流CLI契约；一个连续owner、一份科学草稿、当前问题变化包、原子幂等checkpoint。真实宿主事实和脚本内部事务分开，字段校验不是科学验证。",
   "entry": "uv run python .agents/skills/paper/scripts/research.py --root <vault> workflow <command>",
   "state": ".research/work/<run>/workflow.json",
   "archived_state": ".research/records/runs/<run>/workflow.json",
   "archived_commands": "归档状态存在时仅status/recovery可只读查看（即使清理中断留有work也优先归档状态）；其他操作及init拒绝，不重建work。archive.json的cleanup status单独报告，不把归档当作新增科学验证。",
-  "round_artifact": ".research/work/<run>/units/<unit>/results/<stage>.md",
   "exclusive_candidate_dir": ".research/drafts/<run>/units/<unit>/",
   "commands": {
     "init": "--run <id> --plan <root-contained-json>",
@@ -19,16 +18,20 @@
     "reopen": "--run <id> --unit <id> --stage <id> --reason <specific reason>",
     "tasks": "--run <id> --unit <id> --decisions <root-contained-json>",
     "repeat": "--run <id> --unit <id> --stage <accepted stage> --reason <next scientific batch>",
-    "inputs": "--run <id> --unit <id> --files <root-contained-json-list> --reason <source change> [--stage <earliest affected stage>]",
+    "inputs": "--run <id> --unit <id> --files <json-list> --reason <具体依据> [--mode append|replace|changed-premise] [--stage <最早受影响边界>]",
     "windows": "--run <id> --unit <id> --stage <id> --locations <root-contained-json-list>",
     "constraints": "--run <id> --update <root-contained-json> [--affected <unit:stage>]",
     "interrupt": "--run <id> --unit <id> --reason <actual host interruption>",
     "candidates": "--run <id> [--finding <concrete group-integration finding>]",
     "start-owner": "--run <id> --unit <id> --event <真实首次spawn-json>",
     "adopt-owner": "--run <id> --unit <id> --event <既有同实例显式接管-json>",
-    "step": "--run <id> --unit <id> --agent-id <绑定owner真实ID> --operation begin|submit|accept|revise [--payload <result或finding-json>]",
+    "step": "--run <id> --unit <id> --agent-id <绑定owner真实ID> --operation begin|awaiting-input|submit|accept|revise [--payload <result或finding-json>]",
     "report": "--run <id> --unit <id> [--report <独立最终摘要-json> | --finding <实际最终外部复核-json>]",
-    "resource": "--run <id> --unit <id> --kind guide|protocol|template [--index <0-based>] [--section <当前轮实际标题，可重复>]"
+    "resource": "--run <id> --unit <id> --kind guide|protocol|template [--index <0-based>] [--section <当前轮实际标题，可重复>] [--refresh；明确补证/恢复重读]",
+    "bootstrap": "--run <id> --unit <id> [--refresh]；每物理实例相同封套只返回unchanged引用",
+    "checkpoint": "--run <id> --unit <id> --agent-id <actual-owner> --payload <json>",
+    "add-unit": "--run <id> --plan <新增单元事务-json>",
+    "integrate": "--run <id> --unit <唯一候选writer> --agent-id <actual-owner> --payload <json>"
   },
   "plan": {
     "required": [
@@ -47,7 +50,7 @@
     ],
     "read_inputs": "至少一个真实 source manifest；自动核并冻结其source_path文件和逐块内容哈希。PDF的page_count为实际正整数；HTML/text须source_kind明确、page_count:0及实际section_count，块用section和block_id定位，不假造PDF页。",
     "dependencies": "字符串单元ID表示依赖全部完成；{unit,stage}表示依赖该已接受轮及之前产物。执行DAG不得有环。",
-    "task_decisions": "{leaf_id:{status:selected|not_applicable|pending,reason:具体依据}}。B4/B5默认pending；在R2b前根据论文实际主张选择。",
+    "task_decisions": "{leaf:{status:selected|not_applicable|pending,reason:实际依据}}；所有conditional默认pending（新trace的D8有明确不适用理由），按task-catalog.applicability判据选择，不强制全部任务或固定总数。",
     "conditional_routes": "trace默认跳过T0：无上次研究集合；incremental:true启用T0。compose_topic:false须具体no_topic_reason。",
     "example": {
       "goal": "精读固定版本论文并形成知识增量候选",
@@ -121,7 +124,7 @@
       "critical_details",
       "gaps"
     ],
-    "artifact": "必须在当前轮指定的Markdown路径实际写入，submit固定完整内容哈希。",
+    "artifact": "兼容submit接受本阶段旧results/<stage>.md；正常路径统一checkpoint的science.md；接受文件只绑定不可变版本，不绑定下阶段会变的live科学稿。",
     "answers": "非空，包含question/answer/task_ids；须覆盖当前适用叶任务且不能混入未来叶任务。内容保存科学答案与依据，不保存隐含CoT。",
     "evidence": "非空，path/locator指向当前已固定来源、已接受产物或依赖来源；不自动判断语义支持。",
     "coverage": "非空，每项path/locator/mode(read|image_checked|not_covered)；未覆盖须reason。PDF可用实际page/block_id；HTML/text不得填page，可用section(解析段整数编号)/block_id核固定manifest，原文节标题写locator。页或段与block_id必须一致。",
@@ -159,7 +162,8 @@
       "critical_details": [],
       "gaps": []
     },
-    "agent_id": "unit自主提交绑定实际owner；step submit自动附当前agent-id。保存完整科学记录，不因compact输出删除字段。"
+    "agent_id": "unit自主提交绑定实际owner；step submit自动附当前agent-id。保存完整科学记录，不因compact输出删除字段。",
+    "compatibility": "旧submit/accept/revise为已有interactive/历史接口；正常unit执行只走checkpoint，不生成阶段答案和critical_details第二套报告。"
   },
   "finding": {
     "required": [
@@ -189,10 +193,10 @@
     "text": "用户真实输入",
     "evidence": "可选原消息定位"
   },
-  "publication": "candidates仅输出哈希绑定映射，交review/publish形成可见待审组及冲突保护。脚本状态与授权字段不能代替人类实际授权。",
-  "multi_round": "unit：每篇独立owner一次真实spawn，自主逐轮保存→实际自查/局部审查→accept/revise→下一内部检查点，最终report或异常才交主会话。interactive：逐轮submit→协调者accept→真实续派；旧运行须显式adopt-owner后才启用unit，历史宿主事件不改写。",
+  "publication": "有实质候选要求全部适用边界接受、owner最终report当前绑定、真实final_review accept当前绑定、live候选hash及正式目标基线一致、唯一科学writer。candidates --finding不能跳过final_review；具体组机械检查及用户授权由review/publish再验证。无增量K检查无候选免独立finalreview。",
+  "multi_round": "unit正常路径：一次真实spawn绑定→bootstrap→当前resource→登记输入/条件任务→begin→科学增量+真实自查→checkpoint→下一阶段，全部完成后report和真实finalreview；interactive保留旧显式带读接口，历史记录不静默改写。",
   "owner": {
-    "start-owner": "只接受unit且无owner的首次真实spawn，其余真实宿主字段与dispatch一致。注册事实，不调用宿主；登记后首轮已executing，owner直接执行首轮，后续ready/revision_required轮才step begin。",
+    "start-owner": "只接受unit且无owner的首次真实spawn；注册事实后preparing，先准备当前指南/输入/条件任务，再begin；绝不自动executing。",
     "adopt-owner": {
       "required": [
         "observed",
@@ -203,8 +207,8 @@
       "identity": "observed:true，agent_id必须是已有真实agent owner；当前执行需先真实interrupt。显式control_change追加owner_adoption，历史dispatch/科学版本保留。",
       "resume": "接管不代表执行，owner_active:false。root真实恢复同实例后登记dispatch mode:followup；之后owner自主step，不再逐轮续派。"
     },
-    "step": "agent-id必须等于本单元实际owner且owner活跃；begin只推进当前ready/revision_required/interrupted轮，submit绑定实际结果，accept/revise绑定如实局部检查。每条日志event_type:internal_checkpoint及actual_host_call:false，不记宿主followup。",
-    "round-boundary": "当前轮实际保存→结构/哈希校验→实际self_check或independent_review→accept/revise；owner读取下轮当前包并执行。仍逐轮验收和定向返工，不一次预填全轮。",
+    "step": "绑定实际owner且本人活跃；begin只当前preparing/ready/revision_required/interrupted，awaiting-input保存实际缺口。正常科学接受用checkpoint；旧submit/accept/revise保留为兼容接口。内部事务event_type:internal_checkpoint、actual_host_call:false。",
+    "round-boundary": "当前科学正文增量写入一份science.md→真实自查→原子checkpoint接受/返工；下一边界准备。不可先写三遍控制结果再回填。",
     "main-session": "正常仅接收最终report或异常，可直接审最终候选；内部阶段结果不逐轮回传主会话。脚本只能核ID声明，不能自行证明实际调用或实际独立审查。",
     "interrupt": "unit在awaiting_review真实中断时保留pending及awaiting_review阶段状态，只释放owner_active并追加中断事件；真实同实例followup后dispatch resume_review:true恢复，再局部审查。interactive保留待审结果不可interrupt的旧约定。"
   },
@@ -226,12 +230,59 @@
     ]
   },
   "packaging": {
-    "default": "next/status/recovery默认compact；只有显式--detail full返回详细阶段科学字段。",
-    "next": "只给当前指南/任务、必要约束、固定来源及相关已接受产物路径/哈希/计数和record_ref/interface_ref；不输出累计answers/evidence/coverage/judgment_changes/critical_details/gaps正文。",
-    "addressable": "workflow state_ref + record_ref.json_pointer + record_sha256可按需精确访问记录；interface_ref指向critical_details并附该值哈希。其他接受产物路径/哈希仍保留。",
-    "recovery": "默认同样只交产物引用、当前轮、最近修订摘要和记录定位；详细历史及科学结论仍可显式full或按引用读取。",
-    "revisions": "compact最近返工至多8条、每条400字摘要，附required_change_count及revision_history_ref；发生截短/更多项时必须按ref读完整返工要求，不因摘要缺项跳过。",
-    "resource": "从当前轮已选guide/protocol/template的0起始索引读取；协议/R3默认只返回声明section；显式section须在当前已选section范围内。返回真实file_sha256/content_sha256与选中正文，不加载无关协议。模板/没有section限定的短指南默认返回当前资源全文。",
-    "cross_unit": "跨unit primary每依赖只取声明边界内已接受最终成文记录；该边界尚未成文时只取最新accepted。其余中间科学产物留addressable，不默认列R2a/R2b/R2c多轮为primary。"
+    "default": "bootstrap一次稳定封套；next默认仅当前question/task_refs/resource_refs/science_refs/变化约束/未知/next action。--detail full显式审计视图。",
+    "resources": "短ID如guide-0由当前stage实际guide/protocol/template索引解析，不猜路径；resource持久记录同物理实例+filehash+sections。相同再次请求默认unchanged，--refresh显式补证/恢复。",
+    "recovery": "短科学状态+当前问题包+输入/接受记录引用；来源损坏回诊断和修复入口，不重放累计历史。",
+    "measurement": "仅返回字符代理量；无准确tokenizer/actual usage不能宣称token量或成本达标。真实usage由usage模块按宿主记录聚合。"
+  },
+  "science_draft": ".research/work/<run>/units/<unit>/science.md；科学正文的唯一工作稿，逐阶段新增/修正；保存后算真实SHA提交checkpoint。",
+  "science_state": "unit.science_state为≤6000字符当前科学恢复状态；每个已接受边界的状态/草稿/实际证据保存不可变内容寻址版本。",
+  "checkpoint": {
+    "required": [
+      "transaction_id",
+      "stage",
+      "draft_sha256",
+      "delta",
+      "evidence",
+      "coverage",
+      "science_state",
+      "finding"
+    ],
+    "delta": "非空[{locator,summary,task_ids}]；locator实际出现在science.md的标题/块ID/片段；summary≤800字符；task_ids恰好覆盖当前已选择任务。正文不复制到控制JSON。",
+    "draft_sha256": "当前science.md完整内容的真实SHA256；重复事务同payload/owner幂等返回旧receipt，不推进、不重复事件；同事务不同输入拒绝。",
+    "science_state": "{question,accepted_boundary,interfaces:[],critical_details:[],unresolved:[],next_action}；完整解释在科学草稿，此处保留恢复判断所需短状态。",
+    "evidence": "沿用真实固定path+locator；coverage沿用实际访问模式和PDF/HTML/text定位；保存对应不可变原文件版本（含二进制），替换来源后仍可核旧依据。",
+    "finding": "沿用具体self_check或实际independent_review；decision默认为accept，可revise并须finding.required_changes。",
+    "candidates": "仅最终成文边界[{draft,target}]，唯一写者；正式目标基线自动绑定。",
+    "knowledge_no_change": "仅K1可no_change_reason+relation_checks:[{target:实际已固定/已接受路径,reason}]短退出；仍须具体delta、真实依据/coverage/finding，无候选且judgment_changes为空。剩余K阶段跳过并留具体原因，不启动无增量finalreview。",
+    "atomicity": "整体验证执行者/当前stage/依赖/草稿/增量/实际自查，失败不改变workflow接受状态；单次锁+原子状态写入。接受前各阶段不能预写结果再回填。脚本生成版本/任务覆盖/事件和receipt。"
+  },
+  "inputs": {
+    "append": "默认追加，保留原声明材料和固定来源；验证旧hash不能静默替换。新增材料只影响此后的实际输入绑定，不追溯旧阅读；可--stage指明实质影响。",
+    "replace_or_changed_premise": "必须--stage最早受影响科学边界，只重开该边界及其科学依赖；未受影响接受记录/不可变依据保留。",
+    "states": "绑定owner后preparing，登记资料/读取当前指南/决定条件任务→step begin→executing；缺材料step awaiting-input --payload {reason}→awaiting_input；inputs补齐→preparing→begin；同物理owner不需重新spawn/followup。",
+    "physical_interruption": "只有真实用户停止/宿主失败走interrupt和真实dispatch恢复。待审结果先accept/revise；输入追加不是宿主事件。"
+  },
+  "add_unit": {
+    "required": [
+      "reason",
+      "budget",
+      "unit"
+    ],
+    "budget": "{token_limit:正整数真实授权额度,basis:预算依据}；reason解释局部补证为何不足。",
+    "validation": "unit复用plan单元结构，联合DAG/来源/任务引用/独占目录/唯一目标写者校验；不改既有科学记录，不允许用trace任务表非法塞入C1–C8。"
+  },
+  "integrate": {
+    "required": [
+      "transaction_id",
+      "target",
+      "base_sha256",
+      "owner_observed",
+      "actual_owner_record",
+      "fragments"
+    ],
+    "writer": "--unit/--agent-id必须目标唯一已绑定科学writer；owner_observed:true及实际本人接收记录；已物理中断的owner先真实恢复。",
+    "fragments": "[{old,new,locator,evidence:[{path,locator}],needs_owner_confirmation:true,owner_confirmation}]；old须在基线唯一且不重叠，new可空用于删除。须固定实际依据，受影响判断须owner明确确认。",
+    "transaction": "保护live候选hash及正式目标快照，形成一份新候选并存旧/新版本；重开成文至preparing、失效旧report/finalreview/组整合。随后begin→checkpoint→owner report→真实finalreview。同事务同输入幂等，过期基线和并发修改拒绝。"
   }
 }

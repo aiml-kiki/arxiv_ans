@@ -73,7 +73,7 @@ def manifest_key(data):
                                           'source_sha256', 'parser', 'text_sha256')}
     return digest(json.dumps(identity, ensure_ascii=False, sort_keys=True))
 
-def publish_source(root, prepared, pages=None):
+def _publish_source(root, prepared, pages=None):
     """Coordinator-only publication. Existing originals/manifests stay immutable."""
     root = Path(root).resolve()
     target, raw = prepared['target'], prepared['raw']
@@ -98,6 +98,12 @@ def publish_source(root, prepared, pages=None):
     if not dest.exists():
         atomic_text(dest, payload)
     return source_result(root, dest, data)
+
+def publish_source(root, prepared, pages=None):
+    """Only publication holds the shared lock; extraction never does."""
+    with locked(root, 'sources'):
+        return _publish_source(root, prepared, pages)
+
 
 def _source(root, ident, filename, version):
     """Import bytes once, preserving revisions; never fabricate an arXiv version."""
@@ -127,7 +133,11 @@ def _source_batch(root, specs, workers=2, memory_mb=512):
     destinations = [p['target'] for p in prepared]
     if len(set(destinations)) != len(destinations):
         raise ValueError('批内来源目标路径重复')
-    needs = [i for i, p in enumerate(prepared) if not p['cached']]
+    misses = [i for i, p in enumerate(prepared) if not p['cached']]
+    representatives = {}
+    for i in misses:
+        representatives.setdefault(prepared[i]['source_hash'], i)
+    needs = list(representatives.values())
     estimate = max((sizes[i] * 4 for i in needs), default=1)
     available = max(1, memory_mb * 1024 * 1024 - sum(sizes))
     count = min(workers, len(needs), os.cpu_count() or 1, max(1, available // estimate))
@@ -142,6 +152,12 @@ def _source_batch(root, specs, workers=2, memory_mb=512):
         for i in needs:
             try: pages[i] = extract_pdf(prepared[i]['raw'])
             except Exception as ex: errors[i] = str(ex)
+    for i in misses:
+        representative = representatives[prepared[i]['source_hash']]
+        if representative in errors:
+            errors[i] = errors[representative]
+        else:
+            pages[i] = pages[representative]
     results = []
     for i, p in enumerate(prepared):
         row = {'id': p['ident'], 'version': p['version'], 'cache_hit': bool(p['cached'])}
@@ -150,7 +166,7 @@ def _source_batch(root, specs, workers=2, memory_mb=512):
             except (ValueError, OSError) as ex: errors[i] = str(ex)
         if i in errors: row['error'] = errors[i]
         results.append(row)
-    return {'results': results, 'workers': count, 'cache_hits': len(prepared) - len(needs),
+    return {'results': results, 'workers': count, 'cache_hits': len(prepared) - len(misses), 'parsed_files': len(needs),
             'errors': len(errors), 'memory_mb': memory_mb,
             'limitation': '文件级进程并行；内存估计为调度启发式，非硬进程限额。图表仍须原图核验。'}
 
@@ -241,33 +257,51 @@ def import_text(root, ident, filename, version):
         if read_json(candidate) == data:
             dest = candidate
             break
-    if dest.exists() and read_json(dest) != data:
-        raise ValueError('固定来源解析记录冲突')
-    if not target.exists():
-        target.parent.mkdir(parents=True, exist_ok=True)
-        with target.open('xb') as stream:
-            stream.write(raw)
-    if not dest.exists():
-        write_json(dest, data)
+    with locked(root, 'sources'):
+        if dest.exists() and read_json(dest) != data:
+            raise ValueError('固定来源解析记录冲突')
+        if target.exists() and target.read_bytes() != raw:
+            raise ValueError('发布前发现固定文本冲突；旧原文未改动')
+        if not target.exists():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with target.open('xb') as stream:
+                stream.write(raw)
+        if not dest.exists():
+            write_json(dest, data)
     return {'manifest': str(dest.relative_to(root)), 'source': data['source_path'],
             'source_sha256': data['source_sha256'], 'source_kind': data['source_kind'],
             'sections': len(blocks), 'limitation': '固定文本的解析段不是PDF页；公式、图像及实际阅读需另核。'}
 
 
 def source(root, ident, filename, version):
-    with locked(root, 'sources'):
-        return _source(root, ident, filename, version)
+    return _source(root, ident, filename, version)
 
 
 def source_batch(root, specs, workers=2, memory_mb=512):
-    with locked(root, 'sources'):
-        return _source_batch(root, specs, workers, memory_mb)
+    return _source_batch(root, specs, workers, memory_mb)
 
 
 def fetch_source(root, ident, url, version, max_mb=128):
+    root = Path(root).resolve()
+    safe_id(ident)
+    if not ident.startswith('paper-') or not re.fullmatch(r'[A-Za-z0-9._-]+', version):
+        raise ValueError('固定来源需要paper-身份与明确版本')
+    if not isinstance(max_mb, int) or not 1 <= max_mb <= 1024:
+        raise ValueError('max_mb 须为1..1024')
     parts = urlsplit(url)
     if parts.scheme != 'https' or not parts.hostname or parts.username or parts.password:
         raise ValueError('来源URL须为公开HTTPS，不含凭据')
+    # Existing URL/version provenance is a fixed acquisition, not a freshness claim.
+    for location in sorted({path for key in (digest(url), digest(url + '\n' + version))
+                            for path in (root / '.research/provenance' / ident).glob(f'*/{key}.json')}):
+        provenance = read_json(location)
+        if provenance.get('requested_url') == url and provenance.get('version') == version:
+            fixed = inside(root, provenance['source_path'])
+            if not fixed.is_file() or digest(fixed.read_bytes()) != provenance['source_sha256']:
+                raise ValueError('已固定下载来源缺失/哈希变化；不能静默重新取得替代原文')
+            result = source(root, ident, fixed, version)
+            result.update(provenance=str(location.relative_to(root)), cache_hit=True)
+            return result
     request = Request(url, headers={'User-Agent': 'paper-research/1.0'})
     with urlopen(request, timeout=45) as response:
         resolved = response.geturl()
@@ -284,9 +318,15 @@ def fetch_source(root, ident, url, version, max_mb=128):
         result = source(root, ident, path, version)
     provenance = dict(requested_url=url, resolved_url=resolved, acquired_at=utc_now(),
                       version=version, source_path=result['source'], source_sha256=digest(raw))
-    location = inside(root, f'.research/provenance/{safe_id(ident)}/{digest(raw)}/{digest(url)}.json')
-    if not location.exists():
-        write_json(location, provenance)
+    location = inside(root, f'.research/provenance/{safe_id(ident)}/{digest(raw)}/{digest(url + chr(10) + version)}.json')
+    with locked(root, 'sources'):
+        if location.exists():
+            prior = read_json(location)
+            if any(prior.get(key) != provenance[key] for key in ('requested_url', 'version', 'source_path', 'source_sha256')):
+                raise ValueError('固定下载身份冲突；已有来源未覆盖')
+        else:
+            write_json(location, provenance)
+    result['cache_hit'] = False
     result['provenance'] = str(location.relative_to(Path(root).resolve()))
     return result
 

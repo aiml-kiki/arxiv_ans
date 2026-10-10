@@ -1,6 +1,6 @@
 ---
 name: paper-trace
-description: 显式运行 paper-trace 或由已授权 paper 工作流调用时，围绕焦点问题开展范围明确的研究追溯、真实检索/筛选、引用与技术谱系、覆盖裁决及增量专题研究。
+description: 明确调用或已授权 paper 流程中，围绕焦点问题检索筛选、追溯研究路线并形成有覆盖边界的专题。
 ---
 
 # paper-trace · 可追溯的研究地图
@@ -19,6 +19,6 @@ description: 显式运行 paper-trace 或由已授权 paper 工作流调用时�
 
 一位独立追溯 owner 按 [自主执行契约](../paper/references/unit-owner.md) 完成所选阶段与内部核对，真实集合/筛选落盘，只交最终结果或异常。只加载当前指南与必要来源/证据片段；新论文按问题深度局部阅读，确需完整精读才交独立 paper-read owner，不全文读所有候选。
 
-引用图保留真实边，可用 SCC/投影派生视图，不能删边强造 DAG。引用不是继承；技术关系须双方方法依据。跨来源判断缺分析时借 paper-compare 的必要当前轮；T6 使用 C9 成文，不另建第七能力。
+引用图保留真实边，可用 SCC/投影派生视图，不能删边强造 DAG。引用不是继承；技术关系须双方方法依据。T6 出现跨来源新判断，先判局部补证还是新增比较单元；后者由受支持的计划调整事务登记依赖和独占目标，再启动比较 owner，不能将 C1–C8 塞进 trace 任务表。T6 使用 C9 成文，不另建第七能力。
 
 成文才加载 [topic 模板](assets/topic.md)、[写作](../paper/references/writing.md)和 [Obsidian](../paper/references/obsidian.md)。只有真正按系统调研执行时才加载 [系统综述模块](assets/modules/systematic.md)。实际集合、选择依据、关键变化持久保存；知识整理与正式提交由协调者顺序整合。

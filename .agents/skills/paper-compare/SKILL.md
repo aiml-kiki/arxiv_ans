@@ -1,6 +1,6 @@
 ---
 name: paper-compare
-description: 显式运行 paper-compare 或由已授权 paper 工作流调用时，比较给定论文的共同问题、同情境机制、技术演变/分叉、逐命题证据和条件取舍，由同一比较者分轮综合。
+description: 明确调用或已授权 paper 流程中，对给定论文分析共同情境机制、双端技术关系和有条件选择。
 ---
 
 # paper-compare · 有条件的技术综合
@@ -14,7 +14,7 @@ description: 显式运行 paper-compare 或由已授权 paper 工作流调用时
 | M3 | [evidence](references/evidence.md) | 逐命题可比性、争议、选择/反转与区分观察 |
 | M4 | [composition](references/composition.md) | 连贯对比候选与双端强判断回查 |
 
-一位独立比较 owner 按 [自主执行契约](../paper/references/unit-owner.md) 完成 M1→M4，内部逐阶段保存/核对/返工，只交最终结果。默认直接读取单篇最终接口与必要双端来源，不加载所有中间轮正文；缺接口再定向补证，不由父会话逐轮转述。
+一位独立比较 owner 按 [自主执行契约](../paper/references/unit-owner.md) 完成 M1→M4，向同一科学草稿逐阶段写增量、checkpoint 核对/返工，只交最终结果。默认直接读取单篇最终接口与必要双端来源，不加载所有中间轮正文；缺接口再定向补证，不由父会话逐轮转述。
 
 共同情境是机制分析，须标教学推演；性能优劣/因果结论必须另核数据、协议、预算和统计支持。技术演变既讲旧方案为何合理与瓶颈条件，又讲新接口改变、新能力/成本/假设；没有双端依据就保留平行、分叉或未知，不替作者造动机。
 

@@ -1,11 +1,11 @@
 ---
 name: paper-read
-description: 显式运行 paper-read 或由已授权 paper 工作流调用时，对固定版本论文由同一阅读者真实分轮三遍精读，达到虚拟重构、作者辩护和证据追溯的深度。
+description: 明确调用或已授权 paper 流程中，对固定版本论文连续三遍精读并形成可虚拟重构的完整候选。
 ---
 
 # paper-read · 单篇理解与重构
 
-输入：固定来源/版本及真实能力、用户问题、已有页/接受产物。输出：一篇连贯论文候选、关键证据定位与可迁移知识线索。未知和适用条件是结果的一部分。
+输入：固定来源/版本及真实能力、用户问题、已有页/接受接口。输出：一篇连贯论文候选、关键证据定位与可迁移知识线索。未知和适用条件是结果的一部分。
 
 ## 当前轮路由
 
@@ -19,10 +19,10 @@ description: 显式运行 paper-read 或由已授权 paper 工作流调用时，
 | R3b / 第三遍 | [reconstruction 的区分验证与细节保留](references/reconstruction.md#区分验证与细节保留) | 可观察区分方案及必留细节落点 |
 | R4 / 成文 | [composition](references/composition.md) | 图与正文一致的完整论文候选 |
 
-首次派发给一篇论文的完整目标，由独立 owner 读 [自主执行契约](../paper/references/unit-owner.md)。按上表逐阶段保存→来源回查/自查→接受或返工→再加载下一指南；所有阶段在本人会话完成，只把最终候选/摘要或异常交父会话。长文可同遍拆轮，三遍不能在初始 prompt 中合并要求；自查不冒充独立审查。
+首次派发给一篇论文的完整目标，由独立 owner 读 [自主执行契约](../paper/references/unit-owner.md)。按上表向同一科学草稿增量写入→来源回查/自查→原子 checkpoint 接受或返工→再加载下一指南；所有阶段在本人会话完成，只把最终候选/摘要或异常交父会话。长文可同遍拆轮，三遍不能在初始 prompt 中合并要求；自查不冒充独立审查。
 
-经验/理论适配在 R2b 选择；[系统](assets/modules/system.md)、[数据集与测量](assets/modules/measurement.md)、[综述](assets/modules/survey.md)仅论文涉及且当前问题需要时加载，不把全部检查施加每篇。第二遍/第三遍共同保留改变计算、可见性、训练/证明、状态、成本、验证或取舍的细节。
+B4 只在真实学习过程存在时、B5 只在主要理论主张存在时选择；混合论文分别核对象，无适用项具体说明，不造训练/证明节。[系统](assets/modules/system.md)、[数据集与测量](assets/modules/measurement.md)、[综述](assets/modules/survey.md)仅论文涉及且当前问题需要时加载，不把全部检查施加每篇。第二遍/第三遍共同保留改变计算、可见性、训练/证明、状态、成本、验证或取舍的细节。
 
-成文才读 [论文模板](assets/paper.md)、[共用写作](../paper/references/writing.md)及 [Obsidian](../paper/references/obsidian.md)。方法详解默认先给简明树状总览，再沿真实路径解释；不按三遍拼接报告。科学缺项回当前作者补，结构合规不是科学接受。
+成文才读 [论文模板](assets/paper.md)、[共用写作](../paper/references/writing.md)及 [Obsidian](../paper/references/obsidian.md)。方法详解先给一幅反映真实结构的机制总览，图后给原生可点击导航，再沿路径解释；不按三遍拼接报告。科学缺项回当前作者补，结构合规不是科学接受。
 
 协调者在成文后把有价值候选送 paper-knowledge，按共享审阅协议提交；本作者不直接改正式页或共同知识。虚拟重实现不等于真实实验复现，不制造用户原话或作者未披露步骤。

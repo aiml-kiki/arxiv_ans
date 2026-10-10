@@ -1,6 +1,6 @@
 # 知识增量、未解问题与研究记录
 
-按当前任务读相应节。每次完整精读、对比或实质追溯结束均检查知识机会；有实际变化才修改，不按论文篇数、关系条数或页面年龄升级真理。用户原话和独特解释始终保留。
+按当前任务读相应节。每次完整精读、对比或实质追溯结束均做短知识机会/影响检查；无增量记录具体不变依据与必要关系后退出，有增量才展开语义查重/影响及候选；有实际变化才修改，不按论文篇数、关系条数或页面年龄升级真理。用户原话和独特解释始终保留。
 
 ## 未解问题的稳定单元
 
@@ -56,9 +56,9 @@ uv run python .agents/skills/paper/scripts/research.py --root . derive resolve -
 局部前驱核验、路线追踪、系统综述分别定范围与预算。只有系统综述需要完整系统报告；任何模式都保留真正查询、实际列表、日期、选择依据和限制。
 
 ```sh
-uv run python .agents/skills/paper/scripts/research.py --root . query init --trace retrieval-lineage --question '状态复用如何改变检索接口？' --scope '候选进入时机和参数刷新' --budget '最多两轮雪球，优先必要前驱' --mode lineage --include '接口变化相关' --exclude '只改展示而未改机制'
+uv run python .agents/skills/paper/scripts/research.py --root . query init --trace retrieval-lineage --question '状态复用如何改变检索接口？' --scope '候选进入时机和参数刷新' --budget '最多两轮雪球，优先必要前驱' --queries-budget 4 --pages-budget 4 --candidates-budget 200 --fulltexts-budget 8 --expansions-budget 2 --mode lineage --include '接口变化相关' --exclude '只改展示而未改机制'
 uv run python .agents/skills/paper/scripts/research.py --root . query search --trace retrieval-lineage --provider arxiv --query 'all:"recommendation" AND all:"cache"' --limit 50 --pages 1
-uv run python .agents/skills/paper/scripts/research.py --root . query status --trace retrieval-lineage --records --reports
+uv run python .agents/skills/paper/scripts/research.py --root . query status --trace retrieval-lineage --offset 0 --limit 30 --selection pending
 uv run python .agents/skills/paper/scripts/research.py --root . query screen --trace retrieval-lineage --input .research/work/screen-decisions.json
 uv run python .agents/skills/paper/scripts/research.py --root . query expand --trace retrieval-lineage --provider openalex --seed '<实际已取得的record/work ID>' --direction both --limit 50 --pages 1
 uv run python .agents/skills/paper/scripts/research.py --root . query graph --trace retrieval-lineage --projection included
@@ -71,6 +71,8 @@ uv run python .agents/skills/paper/scripts/research.py --root . query stop --tra
 外部列表可用 `query import --provider manual --input <实际JSON> --observed-at <实际取得ISO日期> --source <真实来源说明> --query <原查询>` 导入；文件形如 `{"records":[{"title":"...","doi":"...","version":null}],"reported_total":null}`。可附 `citation_edges:[{"source":"doi:...","target":"doi:...","location":"实际引用定位"}]`，原文与身份必须真实。导入保存原文件，不假装程序执行过网络 API。API 格式的原响应则选择其真实 provider；额外参数可用 `--parameters <相对JSON>` 保存。
 
 网络只运行明确所选 provider：arXiv 用于元数据检索；Crossref 用于元数据及实际 DOI 后向引用；OpenAlex 用于实际前后向引用。Crossref 此适配器不能前向，arXiv API 不提供引用邻居，遇到限制明确报告，不自动启动其他来源。OpenAlex 后向候选只有实际引用身份时标题仍未知，需后续真实取得和阅读。密钥可用 `PAPER_OPENALEX_API_KEY` 环境变量，仅进 Bearer 请求头；接收联系信息 `PAPER_API_CONTACT` 可进 User-Agent，不打印密钥或写进参数。
+
+默认查询输出当前新增/待判的有界分页及短身份/关键条件/持久引用，不回显所有 events；显式审计才读取历史集合。查询、页、候选、全文及扩展轮次预算按实际消耗累计，越界明确停止或请求扩范围；不能只写自由文本预算便称已执行限额。
 
 请求页、实际参数、UTC 取得时间、原始字节/哈希、响应状态及可用分页信息持久保存在 `.research/queries/<trace>/`。限速依据 provider 间隔和实际响应，失败/429/部分取得保留证据并接续，不声称空结果；实际 `Retry-After` 未结束不再次请求。匿名可用性及限制依赖当前官方规则与实际响应。
 

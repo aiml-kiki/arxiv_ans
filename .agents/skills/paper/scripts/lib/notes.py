@@ -447,7 +447,82 @@ def source_records(root):
     return records, issues
 
 
+def validation_key(root, changes=None):
+    """Content-bound mechanical cache; include name inventory for short Wiki ambiguity."""
+    root = Path(root).resolve()
+    inventory, content = [], {}
+    paths = set(note_paths(root)) | set(manifests(root))
+    if (root / '首页.md').is_file():
+        paths.add(root / '首页.md')
+    for directory, folders, files in os.walk(root, followlinks=False):
+        folders[:] = [folder for folder in folders if not folder.startswith('.')]
+        for name in files:
+            path = Path(directory) / name
+            if name.startswith('.'):
+                continue
+            resolved = path.resolve()
+            inventory.append((str(path.relative_to(root)), str(resolved), resolved.is_file()))
+            if resolved.is_relative_to(root) and resolved.is_file() and path.suffix in {'.md', '.base', '.canvas'}:
+                paths.add(resolved)
+    for manifest in manifests(root):
+        try:
+            paths.add(inside(root, read_json(manifest)['source_path']))
+        except (OSError, ValueError, KeyError, TypeError):
+            pass  # The manifest itself is hashed and the checker reports corruption.
+    overrides = {inside(root, name): value for name, value in (changes or {}).items()}
+    for page in set(note_paths(root)) | set(overrides) | {root / '首页.md'}:
+        try:
+            raw = overrides[page] if page in overrides else (page.read_text(encoding='utf-8') if page.is_file() else '')
+            if raw is None:
+                continue
+            visible = visible_markdown(raw)
+            for match in re.finditer(r'\[\[([^\]]+)\]\]', visible):
+                try:
+                    paths.add(wiki_target(root, page, match[1], overrides))
+                except (ValueError, TypeError):
+                    continue
+            for _, _, destination in markdown_destinations(raw):
+                try:
+                    value = local_destination(root, page, destination)
+                    if value is not None:
+                        paths.add(value[0])
+                except (ValueError, TypeError):
+                    continue
+        except (OSError, ValueError, TypeError):
+            pass  # Invalid links are diagnosed by the full check and remain keyed by their authoring bytes.
+    for path in sorted(paths):
+        content[str(path.relative_to(root))] = digest(path.read_bytes()) if path.is_file() else None
+    engine = {name: digest((Path(__file__).parent / name).read_bytes())
+              for name in ('notes.py', 'semantics.py', 'canvas.py', 'core.py')}
+    return digest(json.dumps({'inventory': sorted(inventory), 'content': content,
+                              'changes': changes or {}, 'engine': engine, 'yaml': yaml.__version__},
+                             ensure_ascii=False, sort_keys=True))
+
+
 def check(root, changes=None):
+    """Reuse mechanical checks only for the exact current vault/overlay/engine snapshot."""
+    root = Path(root).resolve()
+    changes = changes or {}
+    key = validation_key(root, changes)
+    cache = inside(root, '.research/cache/checks/' + key + '.json')
+    if cache.is_file():
+        try:
+            stored = read_json(cache)
+        except (OSError, ValueError):
+            stored = {}
+        if isinstance(stored, dict) and stored.get('key') == key and digest(json.dumps(stored.get('report'), sort_keys=True, ensure_ascii=False)) == stored.get('report_sha256'):
+            if validation_key(root, changes) != key:
+                raise ValueError('机械校验期间资料已改变，重新读取本次候选')
+            return dict(stored['report'], mechanical_cache='hit')
+    report = _check(root, changes)
+    if validation_key(root, changes) != key:
+        raise ValueError('机械校验期间资料已改变，保留当前文件重新核对')
+    write_json(cache, {'key': key, 'report': report,
+                       'report_sha256': digest(json.dumps(report, sort_keys=True, ensure_ascii=False))})
+    return dict(report, mechanical_cache='miss')
+
+
+def _check(root, changes=None):
     """Check proposed outgoing AND existing incoming links, without imposing a heading quota."""
     root = Path(root).resolve()
     changes = changes or {}

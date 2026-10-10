@@ -1,8 +1,8 @@
 # M4 · 连贯 comparison 候选
 
-**开始前预检：** 保持本轮 ready/revision_required；先确认需要的旧页、冻结对照、知识/接受产物是否已在 fixed_inputs 或 accepted 中。新增材料用 `workflow inputs --stage <本轮> --files …` 登记，文件列表保留已有固定来源；重新取 next 核对后才 begin。不要先 begin 再登记，也不要提前读取未登记旧稿。已执行中才发现缺输入时停止并真实中断/恢复，不绕过状态保护。
+**输入准备：** 按 [owner 契约](../../paper/references/unit-owner.md#输入暂停与恢复)登记旧页/冻结对照/相关知识的真实快照；缺输入时 awaiting_input→补齐→preparing，本人继续。接受产物按引用使用，成文才加载下面资源。
 
-本轮 C9。加载接受的 M1–M3、旧正式页相关段落、[comparison 模板](../assets/comparison.md)、[共用写作](../../paper/references/writing.md)及 [Obsidian](../../paper/references/obsidian.md)。
+本轮 C9。加载科学草稿中接受的 M1–M3 接口、旧正式页相关段落、[comparison 模板](../assets/comparison.md)、[共用写作](../../paper/references/writing.md)及 [Obsidian](../../paper/references/obsidian.md)。
 
 先给最重要的机制关系及有条件答案，再共同坐标→同情境→演变/分叉→证据/争议→选择/反转→讨论。各段职责不同，不能换标题重复列优缺点。技术关系给双端定位和判断层次，代表成绩保留协议/预算与统计限制，必要参数说明作用。
 
@@ -10,4 +10,4 @@
 
 交付完整候选、双端回查/剩余限制、知识与专题影响线索。已有同焦点专题优先合并或链接，不能复制同一正文；正式写入由协调者审阅提交。
 
-交付前执行共用写作的五项展示检查：同情境路径在前，同轴短表与长因果解释分开，演变/分叉不能缩为差异清单；保留条件/反例、普通正文中的注册字段、真实导航和可编辑讨论入口。仅报告实际完成的结构/界面检查。
+交付前按 [共用写作](../../paper/references/writing.md#交付前的展示检查)做展示核对；重点核同情境路径、双端技术演变和条件选择，不能缩为两个摘要或差异清单。结构检查与实际界面检查分别如实记录。

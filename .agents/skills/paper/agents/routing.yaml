@@ -3,8 +3,8 @@ schema_version: 3
 allow_implicit_invocation: false
 max_workers: 2 # workflow 单元 owner 上限
 max_owner_units: 2
-max_active_subagents: 3 # owner + 局部助手；仍服从宿主更小的全树上限
-max_depth: 2
+max_active_subagents: 3 # 项目偏好：根以外 owner+helper；运行时另核宿主全树及打开线程容量
+max_depth: 2 # 项目约定根0/owner1/助手2，不是官方 agents.max_depth 配置
 fork_history: none
 script_dispatches_agents: false
 profiles:
@@ -33,12 +33,16 @@ task_routes:
 dispatch:
   independent_multiple_papers: one_autonomous_owner_per_paper
   comparison_trace_knowledge: one_autonomous_owner_per_unit
+  knowledge_owner_when: meaningful_increment_after_short_opportunity_impact_check
   initial_task_scope: entire_unit_goal_current_stage_resources
   parent_receives: final_report_or_actionable_exception
   parent_does_not_receive: intermediate_answers_evidence_coverage_logs
   unit_internal_checkpoints: true
   guidance_loads_current_stage_only: true
-  helper_when: bounded_cross_tier_task_benefit_exceeds_handoff_cost
+  helper_when: bounded_cross_tier_task_benefit_exceeds_full_tree_start_input_output_review_retry_wait_cost
+  helper_parent: owning_unit_owner
+  helper_default_delegates: false
+  helper_returns_to: owning_unit_owner_only
   helper_continuity: reuse_same_helper_for_related_same_tier_work
   replacement_requires_reason_and_handover: true
   main_fallback_requires_concrete_reason: true
@@ -51,14 +55,21 @@ rounds:
   knowledge: [K1, K2, K3, K4]
 context:
   parent_bootstrap: task_dag_source_identity_constraints_final_targets
-  owner_bootstrap: active_skill_unit_owner_contract_routing_once
+  owner_bootstrap: active_skill_unit_owner_contract_runtime_capabilities
+  routing_load: when_model_or_helper_choice_needed
   later_stage: current_guide_new_source_windows_needed_interfaces
   composition_only: one_template_writing_obsidian_once
-  packet_default: paths_hashes_current_tasks
+  packet_default: current_question_changed_constraints_unresolved_resource_refs_next_action
+  scientific_carrier: one_unit_science_draft_plus_short_science_state
+  checkpoint_carrier: immutable_script_generated_versions_not_stage_reports
   full_packet: explicit_audit_only
   do_not_load: [all_48_tasks, future_round_guides, full_parent_history, all_intermediate_rounds, full_manifest_text, maintenance_design]
   reread_only_for: [context_loss, changed_content_hash, targeted_correction, decisive_source_verification]
-  instruction_tokens_soft_target: [1000, 2000]
+  bootstrap_tokens_soft_target: [800, 1200]
+  later_packet_tokens_soft_target: [300, 600]
+  helper_return_tokens_soft_target: [300, 600]
+  token_metrics: actual_usage_only
+  control_packet_proxy: explicit_characters_when_exact_tokenizer_unavailable
   source_budget: actual_scientific_need_not_instruction_target
   missing_token_telemetry: null
 model_resolution:
@@ -72,7 +83,12 @@ model_resolution:
   never_create_agents_to_evade_limits: true
 concurrency:
   capacity_source: host_live_agent_tree
-  count: all_active_owners_and_helpers
+  count: root_plus_all_active_owners_and_helpers
+  open_thread_count: separate_from_active_capacity
+  reservation: reserve_actual_spawn_bind_complete_or_cancel
+  current_host_snapshot_total: 4 # 本次接口事实，下一运行重新核对
+  close_if_supported: true
+  unavailable_close: report_open_capacity_not_fictitious_release
   no_helper_slot: owner_executes_or_waits
   independent_source_io: bounded_async_or_threads
   independent_pdf_parsing: bounded_process_pool_only_on_cache_miss
@@ -82,7 +98,9 @@ review:
   intermediate: owner_source_check_or_bounded_local_review
   review_kinds: [self_check, independent_review, final_review]
   self_check_is_independent_review: false
-  parent_review: final_candidate_only
+  parent_review: final_candidate_decisive_source_windows_only
+  publish_requires: accepted_science_boundaries_current_hashes_actual_final_review_unique_writer_mechanical_check_authorization
+  unchanged_knowledge: concrete_reason_and_related_links_no_empty_candidate_or_review_agent
   ordinary_omission: same_owner_targeted_revision
   script_semantics: not_scientifically_verified
   default_user_interaction: complete_candidate_group

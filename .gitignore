@@ -13,4 +13,4 @@
 .claude/*
 !.claude/skills/
 *.sqlite*
-scripts/
+/scripts/

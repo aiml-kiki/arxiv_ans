@@ -28,6 +28,42 @@ def payload_digest(entries):
     return digest(json.dumps(entries, ensure_ascii=False, sort_keys=True))
 
 
+def workflow_gate(root, run, entries, origins=None):
+    """Bind a research proposal to current reviewed candidates, never an integration string."""
+    from .workflow import candidates, accepted_binding, state_path, archived_state_path
+    path = state_path(root, run)
+    if not path.is_file():
+        if path.parent.exists() or archived_state_path(root, run).exists():
+            raise ValueError('研究运行缺有效工作状态或已归档，不能绕过科学交付门')
+        return {'mode': 'direct_edit', 'scope': '实际用户审阅当前改动；无研究工作流科学验收声明'}
+    state = read_json(path)
+    if state.get('run_id') != run or state.get('schema_version') != 2:
+        raise ValueError('关联工作流身份或版本不符')
+    group = candidates(root, state)
+    mapping = group['mapping']
+    selected = [entry for entry in entries if entry['path'] != '首页.md']
+    for entry in selected:
+        candidate = mapping.get(entry['path'])
+        if not candidate or entry['content'] is None:
+            raise ValueError('关联研究的正式改动没有唯一已核验候选: ' + entry['path'])
+        draft = inside(root, candidate['draft'])
+        raw = draft.read_bytes()
+        if digest(raw) != candidate['sha256']:
+            raise ValueError('科学验收候选已改变: ' + entry['path'])
+        if origins and origins.get(entry['path']) != {'draft': candidate['draft'], 'sha256': candidate['sha256']}:
+            raise ValueError('提案来源绑定与当前科学候选不同，请重新整合/暂存')
+        paths = {inside(root, value['draft']): target_path(root, target) for target, value in mapping.items()}
+        content = rebase_markdown(root, raw.decode('utf-8'), draft, target_path(root, entry['path']), paths)
+        content = rewrite_wiki(root, content, draft, paths)
+        if content != entry['content']:
+            raise ValueError('待发布正文不同于科学核验候选；更新受影响候选并重新核验: ' + entry['path'])
+    return {'mode': 'workflow', 'run': run,
+            'unit_bindings': {ident: accepted_binding(unit) for ident, unit in state['units'].items()},
+            'candidate_hashes': {entry['path']: mapping[entry['path']]['sha256'] for entry in selected},
+            'origins': {entry['path']: {'draft': mapping[entry['path']]['draft'],
+                                      'sha256': mapping[entry['path']]['sha256']} for entry in selected}}
+
+
 def load_proposal(root, proposal):
     record = read_json(proposal_path(root, proposal))
     if record.get('schema_version') != 1 or payload_digest(record['entries']) != record['digest']:
@@ -152,7 +188,7 @@ def stage(root, changes, proposal, run=None, summary=None, origins=None):
     safe_id(run or proposal)
     if not isinstance(changes, dict) or not changes:
         raise ValueError('changes须为非空 正式路径→正文/null 映射')
-    with locked(root, 'review-publish'):
+    with locked(root, f'workflow:{run or proposal}'), locked(root, 'review-publish'):
         path = proposal_path(root, proposal)
         if path.parent.exists() or inside(root, f'审阅/{proposal}').exists():
             raise ValueError('提案标识已存在；原待审视图保留，请使用新标识或import当前编辑')
@@ -168,13 +204,16 @@ def stage(root, changes, proposal, run=None, summary=None, origins=None):
             entries.append({'path': str(target.relative_to(root)),
                             'before': digest(target.read_bytes()) if target.exists() else None,
                             'content': content})
+        scientific_binding = workflow_gate(root, run or proposal, entries, origins)
         report = check_changes(root, {entry['path']: entry['content'] for entry in entries})
         if report['errors']:
             raise ValueError('正式/入链预检失败: ' + json.dumps(report['issues'], ensure_ascii=False))
         record = {'schema_version': 1, 'proposal': proposal, 'run': run or proposal,
                   'entries': entries, 'digest': payload_digest(entries), 'revision': 1,
                   'status': 'pending', 'created_at': utc_now(), 'summary': summary,
-                  'origins': origins or {}, 'retired_preview_hashes': {}, 'validation': report}
+                  'origins': origins or scientific_binding.get('origins', {}),
+                  'retired_preview_hashes': {}, 'validation': report,
+                  'scientific_binding': scientific_binding}
         configure_views(record)
         write_views(root, record)
         return {'proposal': proposal, 'digest': record['digest'], 'revision': 1,
@@ -231,8 +270,11 @@ def assert_canonical(root, record):
 
 def import_edits(root, proposal, acknowledge_retired=None):
     root = Path(root).resolve()
-    with locked(root, 'review-publish'):
+    initial_run = safe_id(load_proposal(root, proposal)['run'])
+    with locked(root, f'workflow:{initial_run}'), locked(root, 'review-publish'):
         record = load_proposal(root, proposal)
+        if record['run'] != initial_run:
+            raise ValueError('提案关联运行在加锁前改变，保留原稿重新核对')
         if record['status'] != 'pending':
             raise ValueError('仅合并待审提案')
         assert_canonical(root, record)
@@ -283,6 +325,8 @@ def import_edits(root, proposal, acknowledge_retired=None):
                     path: {'sha256': digest(raw), 'content': raw.decode('utf-8')}
                     for path, raw in retired_snapshots.items()}})
         record['entries'] = entries
+        # Import preserves user edits; publication must rebind their scientific changes.
+        record['scientific_binding'] = None
         record['validation'] = check_report
         record['digest'] = payload_digest(entries)
         record['revision'] += 1
@@ -296,8 +340,11 @@ def publish(root, proposal, approved_digest, authorization):
     root = Path(root).resolve()
     if not isinstance(authorization, str) or not authorization.strip():
         raise ValueError('需记录实际用户授权或既有授权范围；摘要不是授权')
-    with locked(root, 'review-publish'):
+    initial_run = safe_id(load_proposal(root, proposal)['run'])
+    with locked(root, f'workflow:{initial_run}'), locked(root, 'review-publish'):
         record = load_proposal(root, proposal)
+        if record['run'] != initial_run:
+            raise ValueError('提案关联运行在加锁前改变，保留原稿重新核对')
         if record['status'] != 'pending' or record['digest'] != approved_digest:
             raise ValueError('批准的候选已改变或已处理，请核对最新具体内容')
         assert_canonical(root, record)
@@ -307,6 +354,9 @@ def publish(root, proposal, approved_digest, authorization):
         if status['formal_conflicts']:
             raise ValueError('正式页在审阅期间改变，保留修改并重新合并: ' +
                              json.dumps(status['formal_conflicts'], ensure_ascii=False))
+        current_binding = workflow_gate(root, record['run'], record['entries'], record.get('origins'))
+        if current_binding['mode'] == 'workflow' and current_binding != record.get('scientific_binding'):
+            raise ValueError('科学候选/复核已改变或候选编辑后未重新绑定，重新暂存具体候选')
         baseline_report = check(root)
         report = check_changes(root, {entry['path']: entry['content'] for entry in record['entries']}, baseline=baseline_report)
         if report['errors']:
@@ -365,6 +415,7 @@ def publish(root, proposal, approved_digest, authorization):
         record['applied_at'] = utc_now()
         record['authorization'] = authorization.strip()
         record['validation'] = report
+        record['scientific_binding'] = current_binding
         commit = {key: record[key] for key in ('proposal', 'run', 'digest', 'revision', 'applied_at', 'authorization')}
         commit['entries'] = [{'path': entry['path'], 'before': entry['before'],
                              'after': digest(entry['content']) if entry['content'] is not None else None}
@@ -482,8 +533,14 @@ def finish(root, run, discard_unpublished=False, abandon_reason=None):
                     raise ValueError('仍有执行中的单元；先真实中断代理并登记workflow interrupt，再废弃运行')
                 data['abandonment'] = {'at': utc_now(), 'reason': str(abandon_reason).strip(),
                                        'scientific_status_preserved': True}
+            elif (any(unit.get('owner_active') for unit in data['units'].values()) or
+                  any(helper.get('status') in {'reserved', 'bound'}
+                      for helper in data.get('runtime', {}).get('helpers', {}).values())):
+                raise ValueError('仍有科学owner交付或助手运行/预留未结束，保留工作文件')
             from .workflow import candidates as workflow_candidates
-            group = workflow_candidates(root, data) if abandon_reason is None else {'mapping': {}}
+            # Published bytes replace the pre-publication target baseline. Below,
+            # exact proposal/commit/current-byte checks supply the cleanup gate.
+            group = workflow_candidates(root, data, check_target_baselines=False) if abandon_reason is None else {'mapping': {}}
             if abandon_reason is None and not data.get('integration'):
                 raise ValueError('先用workflow candidates --finding记录全组语义与知识增量核验')
             for target, candidate in group['mapping'].items():
@@ -551,8 +608,28 @@ def finish(root, run, discard_unpublished=False, abandon_reason=None):
                 raise ValueError('清理/归档目录身份异常，保留所有文件: ' + str(path.relative_to(root)))
             if path.exists() and any(child.is_symlink() for child in path.rglob('*')):
                 raise ValueError('目录含符号链接，需明确处理后清理: ' + str(path.relative_to(root)))
+        persistent = directory_snapshot(durable)
         if durable.exists():
-            raise ValueError('归档目标已存在；原档案与工作文件均保留，请核对上次清理状态')
+            # Report/helper versions are written before finish and already
+            # belong to this run. Accept only hash-bound versions; a partial
+            # archive or unrelated file must still block cleanup.
+            known = {}
+            def persistent_refs(value):
+                if isinstance(value, list):
+                    for item in value:
+                        persistent_refs(item)
+                elif isinstance(value, dict):
+                    location, expected = value.get('path'), value.get('sha256')
+                    if isinstance(location, str) and isinstance(expected, str):
+                        path = inside(root, location)
+                        if path.is_relative_to(durable):
+                            known[str(path.relative_to(durable))] = expected
+                    for item in value.values():
+                        persistent_refs(item)
+            persistent_refs([data, *records])
+            if (any(child.name not in {'reports', 'helpers'} or not child.is_dir() for child in durable.iterdir())
+                    or any(known.get(name) != value for name, value in persistent.items())):
+                raise ValueError('归档目标含未绑定记录或部分档案；保留原档案与工作文件')
         path_map = {str(folder.relative_to(root)): str(destination.relative_to(root))
                     for folder, destination in archives.items()}
 
@@ -603,7 +680,8 @@ def finish(root, run, discard_unpublished=False, abandon_reason=None):
                         return path_map[old] + value[len(old):]
             return value
 
-        copies = []
+        copies = [{'kind': 'file', 'destination': str((durable / name).relative_to(root)), 'sha256': value}
+                  for name, value in persistent.items()]
         for folder, destination in archives.items():
             shutil.copytree(folder, destination)
             copied = directory_snapshot(destination)

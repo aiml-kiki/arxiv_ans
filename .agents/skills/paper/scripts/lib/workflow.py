@@ -8,6 +8,8 @@ from __future__ import annotations
 import argparse
 from copy import deepcopy
 import json
+import os
+import tempfile
 import re
 from pathlib import Path
 from typing import Any
@@ -53,9 +55,27 @@ def text(value: Any, label: str) -> str:
 
 def catalog() -> dict:
     value = read_json(CATALOG_PATH)
-    if len(value.get("tasks", {})) != 48:
-        raise ValueError("叶任务目录须恰有48项")
-    return value["tasks"]
+    tasks = value.get("tasks", {})
+    if not isinstance(tasks, dict) or not tasks:
+        raise ValueError("叶任务目录须有实际任务")
+    valid_rounds = {stage for stages in STAGES.values() for stage, _, _ in stages} | {
+        "every_round", "every_dispatch", "every_return", "candidate_group", "authorized_publish", "boundaries"}
+    for key, item in tasks.items():
+        if not re.fullmatch(r"[A-F][1-9][0-9]*", key) or not isinstance(item, dict):
+            raise ValueError("任务ID/定义无效")
+        for field in ("name", "owner", "gate"):
+            text(item.get(field), f"任务{key}.{field}")
+        rounds = item.get("rounds")
+        if not isinstance(rounds, list) or any(stage not in valid_rounds for stage in rounds):
+            raise ValueError(f"任务阶段/范围引用无效: {key}")
+        if item.get("conditional") and not item.get("applicability"):
+            raise ValueError(f"条件任务缺少适用判据: {key}")
+    for kind, stages in STAGES.items():
+        for stage, leaves, _ in stages:
+            for key in leaves:
+                if key not in tasks or stage not in tasks[key].get("rounds", []):
+                    raise ValueError(f"阶段任务引用无效: {kind}:{stage}:{key}")
+    return tasks
 
 
 def state_path(root: Path, run: str) -> Path:
@@ -83,7 +103,7 @@ def verify(root: Path, files: list[dict]) -> None:
 def preserved_version(root: Path, run: str, ident: str, stage: str, file: dict, label: str) -> dict:
     """A revision may overwrite a work path; accepted scientific versions survive."""
     original = inside(root, file["path"])
-    path = inside(root, f".research/work/{run}/units/{ident}/versions/{stage}/{label}-{file['sha256']}.md")
+    path = inside(root, f".research/work/{run}/units/{ident}/versions/{stage}/{label}-{file['sha256']}{original.suffix or '.bin'}")
     raw = original.read_bytes()
     if digest(raw) != file["sha256"]:
         raise ValueError("保存版本时工作文件已变动，停止提交")
@@ -91,7 +111,16 @@ def preserved_version(root: Path, run: str, ident: str, stage: str, file: dict, 
         if digest(path.read_bytes()) != file["sha256"]:
             raise ValueError("内容寻址的历史版本损坏，不覆盖")
     else:
-        atomic_text(path, raw.decode("utf-8"))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(dir=path.parent, prefix=".version-")
+        try:
+            with os.fdopen(descriptor, "wb") as output:
+                output.write(raw)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, path)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
     return snapshot(root, str(path.relative_to(root)))
 
 
@@ -188,10 +217,10 @@ def skip_inapplicable(unit: dict) -> None:
                 item["skip_reasons"] = {key: unit["tasks"][key]["reason"] for key in item["tasks"]}
 
 
-def initialize(root: Path, run: str, plan: dict) -> dict:
+def initialize(root: Path, run: str, plan: dict, existing: dict | None = None) -> dict:
     if archived_state_path(root, run).exists():
         raise ValueError("该运行已有归档状态；仅status/recovery可只读查看。继续研究须使用新run引用已有材料，不能重建或覆盖旧运行")
-    if state_path(root, run).exists():
+    if existing is None and state_path(root, run).exists():
         raise ValueError("已有运行；用status/next/recovery接续，禁止重新初始化覆盖")
     goal = text(plan.get("goal"), "具体研究目标")
     if not isinstance(plan.get("constraints", []), list):
@@ -202,7 +231,10 @@ def initialize(root: Path, run: str, plan: dict) -> dict:
     specs = plan.get("units")
     if not isinstance(specs, list) or not specs:
         raise ValueError("plan.units须是非空列表")
-    tasks, units, outputs = catalog(), {}, set()
+    tasks = catalog()
+    units = deepcopy(existing["units"]) if existing else {}
+    outputs = {inside(root, unit["draft"]) for unit in units.values()}
+    target_writers = deepcopy(existing.get("candidate_writers", {})) if existing else {}
     limit = plan.get("max_workers", 2)
     if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
         raise ValueError("max_workers须为正整数，默认2；提高须有实际资源/用户依据")
@@ -226,12 +258,15 @@ def initialize(root: Path, run: str, plan: dict) -> dict:
         outputs.add(draft)
         target = spec.get("target")
         if target is not None:
-            validate_target(root, target)
+            target = validate_target(root, target)
+            if target in target_writers:
+                raise ValueError("每个最终目标只能声明一个候选写者: " + target)
+            target_writers[target] = ident
         applicable = {key for _, leaves, _ in STAGES[kind] for key in leaves}
         decisions = {key: {"status": "selected", "reason": f"当前{kind}目标需要此叶任务"} for key in applicable}
-        if kind == "read":
-            for key in ("B4", "B5"):
-                decisions[key] = {"status": "pending", "reason": "依据固定论文的学习/理论主张在R2b前选择；不可按模板自动假定"}
+        for key in applicable:
+            if tasks[key].get("conditional"):
+                decisions[key] = {"status": "pending", "reason": tasks[key]["applicability"]}
         if kind == "trace" and not spec.get("incremental", False):
             decisions["D8"] = {"status": "not_applicable", "reason": "本单元是新范围研究，没有上次研究集合供增量复核"}
         if kind == "trace" and not spec.get("compose_topic", True):
@@ -256,6 +291,9 @@ def initialize(root: Path, run: str, plan: dict) -> dict:
                         "declared_input_paths": list(dict.fromkeys(spec.get("inputs", []))),
                         "source_windows": spec.get("source_windows", {}), "question": spec.get("question"),
                         "recovery_notes": [], "requested_profile": spec.get("requested_profile"),
+                        "science_draft": str(output_dir.parent.relative_to(root) / "science.md"),
+                        "science_state": None, "transactions": {}, "resource_reads": {},
+                        "input_history": [], "bootstrap_instances": {},
                         "candidate_kind": {"read": "paper", "compare": "comparison", "trace": "topic", "knowledge": "knowledge"}[kind]}
         skip_inapplicable(units[ident])
     validate_dag(units)
@@ -269,7 +307,7 @@ def initialize(root: Path, run: str, plan: dict) -> dict:
     return {"schema_version": 2, "run_id": run, "goal": goal, "created": utc_now(), "updated": utc_now(),
             "max_workers": limit, "autonomy": autonomy, "units": units, "task_scope": selection,
             "constraints": plan.get("constraints", []), "constraint_history": [], "events": [],
-            "authorization": plan.get("authorization", {}), "integration": None,
+            "authorization": plan.get("authorization", {}), "integration": None, "candidate_writers": target_writers,
             "semantic_verification": "attributed_human_or_agent_checks_not_performed_by_script"}
 
 
@@ -310,6 +348,8 @@ def prerequisite_records(root: Path, state: dict, unit: dict) -> list[dict]:
             if stage["accepted"]:
                 verify(root, stage["accepted"]["files"])
                 verify(root, stage["accepted"].get("evidence_files", []))
+                verify(root, [{"path": item["draft"], "sha256": item["sha256"]}
+                              for item in stage["accepted"].get("candidates", [])])
                 records.append(stage["accepted"])
             if stage["id"] == needed["id"]:
                 break
@@ -317,6 +357,8 @@ def prerequisite_records(root: Path, state: dict, unit: dict) -> list[dict]:
         if stage["accepted"]:
             verify(root, stage["accepted"]["files"])
             verify(root, stage["accepted"].get("evidence_files", []))
+            verify(root, [{"path": item["draft"], "sha256": item["sha256"]}
+                          for item in stage["accepted"].get("candidates", [])])
             records.append(stage["accepted"])
     return records
 
@@ -355,11 +397,11 @@ def autonomy_mode(unit: dict) -> str:
 
 def owner_running(unit: dict) -> bool:
     stage = current_round(unit)
-    if not unit["owner"] or unit["owner"]["mode"] != "agent" or not stage:
+    if not unit["owner"] or unit["owner"]["mode"] != "agent":
         return False
     if autonomy_mode(unit) == "unit":
         return unit.get("owner_active", False)
-    return stage["status"] == "executing"
+    return bool(stage and stage["status"] == "executing")
 
 
 def record_reference(root: Path, state: dict, unit: dict, stage: dict, field: str) -> dict:
@@ -376,15 +418,20 @@ def record_reference(root: Path, state: dict, unit: dict, stage: dict, field: st
 def short_record(record: dict, detail: str = "compact", reference: dict | None = None) -> dict:
     if detail == "full":
         return {key: record.get(key) for key in ("unit", "stage", "files", "answers", "evidence", "coverage",
-                                                "judgment_changes", "critical_details", "gaps", "finding")}
-    result = {key: record.get(key) for key in ("unit", "stage", "files")}
+                                                "judgment_changes", "critical_details", "gaps", "finding", "delta",
+                                                "science_state_ref", "input_versions", "input_binding", "sources", "transaction_id", "candidates", "no_change_reason")}
+    result = {key: record.get(key) for key in ("unit", "stage")}
+    result["science_state_ref"] = record.get("science_state_ref")
     result["counts"] = {key: len(record.get(key, [])) for key in
                         ("answers", "evidence", "coverage", "judgment_changes", "critical_details", "gaps")}
     result["review_kind"] = record.get("finding", {}).get("review_kind", "legacy_coordinator_review")
     if reference:
         result["record_ref"] = reference
-        result["interface_ref"] = {**reference, "json_pointer": reference["json_pointer"] + "/critical_details",
-                                   "record_sha256": digest(json.dumps(record.get("critical_details", []), ensure_ascii=False, sort_keys=True))}
+        if record.get("science_state_ref"):
+            result["interface_ref"] = {**record["science_state_ref"], "json_pointer": "/critical_details"}
+        else:
+            result["interface_ref"] = {**reference, "json_pointer": reference["json_pointer"] + "/critical_details",
+                                       "record_sha256": digest(json.dumps(record.get("critical_details", []), ensure_ascii=False, sort_keys=True))}
     return result
 
 
@@ -403,7 +450,10 @@ def short_revision(value: dict, detail: str = "compact") -> dict:
                           required_changes=[str(item)[:400] for item in changes[:8]],
                           required_change_count=len(changes))
     if value.get("previous_result"):
-        result["previous_files"] = value["previous_result"]["files"]
+        if detail == "full":
+            result["previous_files"] = value["previous_result"]["files"]
+        else:
+            result["previous_version_count"] = len(value["previous_result"]["files"])
     return result
 
 
@@ -486,7 +536,7 @@ def protocol_refs(unit: dict, stage: dict, composition: bool) -> list[dict]:
     return refs
 
 
-def next_packet(root: Path, state: dict, ident: str, detail: str = "compact") -> dict:
+def audit_next_packet(root: Path, state: dict, ident: str, detail: str = "full") -> dict:
     unit = find_unit(state, ident)
     stage = current_round(unit)
     autonomous = autonomy_mode(unit) == "unit"
@@ -565,6 +615,82 @@ def next_packet(root: Path, state: dict, ident: str, detail: str = "compact") ->
             "semantic_verification": "not_performed_by_script"}
 
 
+def state_ref(state: dict, ident: str, field: str) -> dict:
+    return {"path": f".research/work/{state['run_id']}/workflow.json",
+            "json_pointer": f"/units/{ident}/{field}"}
+
+
+def bootstrap(root: Path, state: dict, ident: str, refresh: bool = False) -> dict:
+    """One stable envelope per physical instance; audit data remains in state."""
+    unit = find_unit(state, ident)
+    instance = unit["owner"]["agent_id"] if unit.get("owner") else "unbound"
+    envelope = {"unit": ident, "goal": unit["goal"], "question": unit.get("question"),
+                "constraints": state["constraints"], "inputs_ref": state_ref(state, ident, "inputs"),
+                "sources_ref": state_ref(state, ident, "sources"),
+                "draft": unit["draft"], "science_draft": unit.get("science_draft"), "target": unit["target"],
+                "responsibility": "本人按当前阶段准备、执行、checkpoint；仅交最终报告或异常；助手不写本人草稿",
+                "runtime_ref": {"path": state_ref(state, ident, "inputs")["path"], "json_pointer": "/runtime"},
+                "entry": str(PACKAGE.parent / f"paper-{unit['kind']}" / "SKILL.md"),
+                "resource_policy": "当前指南按resource读取；同实例相同hash/section默认unchanged，补证显式refresh"}
+    binding = digest(json.dumps(envelope, ensure_ascii=False, sort_keys=True))
+    loaded = unit.setdefault("bootstrap_instances", {})
+    previous = loaded.get(instance)
+    previous_sha = previous.get("sha256") if isinstance(previous, dict) else previous
+    if previous_sha == binding and not refresh:
+        return {"unit": ident, "status": "unchanged", "bootstrap_sha256": binding,
+                "ref": state_ref(state, ident, "bootstrap_instances")}
+    loaded[instance] = {"sha256": binding, "at": utc_now()}
+    if previous and not refresh:
+        previous_at = previous.get("at", state["created"]) if isinstance(previous, dict) else state["created"]
+        return {"unit": ident, "status": "changes", "goal": unit["goal"],
+                "changed_constraints": [item for item in state["constraint_history"] if item["at"] > previous_at],
+                "bootstrap_sha256": binding, "ref": state_ref(state, ident, "bootstrap_instances")}
+    return {**envelope, "bootstrap_sha256": binding, "instance": instance,
+            "measurement": {"characters": len(json.dumps(envelope, ensure_ascii=False)), "tokens": None,
+                            "kind": "character_proxy_not_actual_usage"}}
+
+
+def next_packet(root: Path, state: dict, ident: str, detail: str = "compact") -> dict:
+    if detail == "full":
+        return audit_next_packet(root, state, ident, detail)
+    unit = find_unit(state, ident)
+    stage = current_round(unit)
+    prerequisite_records(root, state, unit)
+    if not stage:
+        return {"unit": ident, "status": "all_rounds_accepted", "action": "report_final_result",
+                "draft": unit["draft"], "science_state_ref": state_ref(state, ident, "science_state")}
+    pending = [key for key in stage["tasks"] if unit["tasks"][key]["status"] == "pending"]
+    active = [key for key in stage["tasks"] if unit["tasks"][key]["status"] == "selected"]
+    tasks = catalog()
+    refs = guide_refs(unit, stage, active)
+    composition = stage["base"] == FINAL[unit["kind"]]
+    resources = {"guide": refs, "protocol": protocol_refs(unit, stage, composition),
+                 "template": [{"path": str(PACKAGE.parent / f"paper-{unit['kind']}" / "assets" / f"{unit['candidate_kind']}.md")}] if composition else []}
+    action = ("start_owner_once" if not unit["owner"] else
+              "resolve_input_gap" if stage["status"] == "awaiting_input" else
+              "record_task_decisions" if pending else
+              "local_review" if stage["status"] == "awaiting_review" else
+              "read_and_update" if stage["status"] == "executing" else "prepare_and_begin")
+    result = {"unit": ident, "stage": stage["id"], "status": stage["status"], "action": action,
+              "question": stage.get("goal") or unit.get("question") or unit["goal"],
+              "task_refs": active, "pending_tasks": {key: tasks[key]["applicability"] for key in pending},
+              "resource_refs": [f"{kind}-{index}" for kind, items in resources.items() for index, ref in enumerate(items)],
+              "preflight_before_begin": {"composition": composition},
+              "science_refs": {"draft": unit.get("science_draft"), "state": state_ref(state, ident, "science_state")},
+              "changed_constraints": [item for item in state["constraint_history"] if item["at"] > unit.get("constraint_seen_at", state["created"])],
+              "unresolved": (unit.get("science_state") or {}).get("unresolved", []),
+              "source_windows": unit.get("source_windows", {}).get(stage["id"], []),
+              "revision": short_revision(stage["history"][-1]) if stage["history"] else None}
+    if stage["history"]:
+        result["revision_ref"] = {**state_ref(state, ident, "rounds"),
+                                  "json_pointer": f"/units/{ident}/rounds/{unit['rounds'].index(stage)}/history"}
+    if stage["status"] == "awaiting_input":
+        result["input_gap"] = stage.get("input_gap")
+    result["measurement"] = {"characters": len(json.dumps(result, ensure_ascii=False)), "tokens": None,
+                             "kind": "character_proxy_not_actual_usage"}
+    return result
+
+
 def dispatch(root: Path, state: dict, ident: str, event: dict, owner_start: bool = False) -> dict:
     unit = find_unit(state, ident)
     stage = current_round(unit)
@@ -576,7 +702,8 @@ def dispatch(root: Path, state: dict, ident: str, event: dict, owner_start: bool
     if not stage or (stage["status"] in LIVE and not resume_review):
         raise ValueError("本轮已执行/待复核或单元已完成，不可重复派发")
     prerequisite_records(root, state, unit)
-    selected_tasks(unit, stage)
+    if not owner_start:
+        selected_tasks(unit, stage)
     if event.get("observed") is not True or event.get("mode") not in {"spawn", "followup", "main"}:
         raise ValueError("dispatch仅登记已发生的宿主执行事件，须observed:true及mode:spawn/followup/main")
     agent, tool = text(event.get("agent_id"), "实际执行者ID"), text(event.get("tool"), "实际宿主工具")
@@ -605,7 +732,7 @@ def dispatch(root: Path, state: dict, ident: str, event: dict, owner_start: bool
     if identity["mode"] == "agent":
         active = [u for key, u in state["units"].items() if key != ident and owner_running(u)]
         capacity_violation = len(active) >= state["max_workers"]
-        if any(u["owner"] and u["owner"]["agent_id"] == agent and not complete(u)
+        if any(u["owner"] and u["owner"]["agent_id"] == agent and (not complete(u) or owner_running(u))
                for key, u in state["units"].items() if key != ident):
             raise ValueError("同一物理代理不能同时拥有两个尚未完成独立单元")
     record = {**event, "at": utc_now(), "unit": ident, "stage": stage["id"],
@@ -616,10 +743,13 @@ def dispatch(root: Path, state: dict, ident: str, event: dict, owner_start: bool
     unit["owner"] = identity
     if autonomy_mode(unit) == "unit":
         unit["owner_active"] = True
+        unit["owner_interrupted"] = False
     unit["owner_history"].append(identity | {"at": record["at"]})
     stage["dispatches"].append(record)
     if not resume_review:
-        stage["status"] = "executing"
+        stage["status"] = "preparing" if autonomy_mode(unit) == "unit" else "executing"
+        if stage["status"] == "executing":
+            stage["input_binding"] = deepcopy(unit["inputs"])
     state["events"].append({**record, "event": "actual_dispatch", "event_type": "actual_host_call"})
     state["integration"] = None
     return {"unit": ident, "stage": stage["id"], "status": stage["status"], "record": record,
@@ -634,7 +764,7 @@ def start_owner(root: Path, state: dict, ident: str, event: dict) -> dict:
     if event.get("mode") != "spawn":
         raise ValueError("start-owner必须登记真实spawn，不能把内部分轮记录成宿主调用")
     result = dispatch(root, state, ident, event, owner_start=True)
-    return result | {"autonomy": "unit", "next": "首轮已executing，直接执行并保存→step submit→实际局部检查→step accept/revise；后续ready轮才step begin；全部轮次后report"}
+    return result | {"autonomy": "unit", "next": "绑定后preparing；先读当前指南、登记固定输入和范围，再step begin；执行后checkpoint；最终report"}
 
 
 def adopt_owner(root: Path, state: dict, ident: str, event: dict) -> dict:
@@ -682,7 +812,7 @@ def owner_step(root: Path, state: dict, ident: str, agent_id: str, operation: st
     if operation == "begin":
         if payload is not None:
             raise ValueError("step begin不接受科学结果payload，提交结果用step submit")
-        if stage["status"] not in {"ready", "revision_required", "interrupted"}:
+        if stage["status"] not in {"ready", "preparing", "revision_required", "interrupted"}:
             raise ValueError("当前检查点已执行/待审，不重复begin")
         prerequisite_records(root, state, unit)
         selected_tasks(unit, stage)
@@ -690,7 +820,17 @@ def owner_step(root: Path, state: dict, ident: str, agent_id: str, operation: st
             raise ValueError("实际活跃owner超过容量，须真实中断超额实例并登记interrupt")
         stage.setdefault("executions", []).append(checkpoint)
         stage["status"] = "executing"
+        stage["constraint_seen_at"] = utc_now()
+        unit["constraint_seen_at"] = stage["constraint_seen_at"]
+        stage["input_binding"] = deepcopy(unit["inputs"])
         value = {"unit": ident, "stage": stage["id"], "status": "executing"}
+    elif operation == "awaiting-input":
+        if stage["status"] not in {"preparing", "executing", "revision_required"}:
+            raise ValueError("当前阶段不能暂停等待材料")
+        payload = payload or {}
+        stage["input_gap"] = {"reason": text(payload.get("reason"), "缺材料及科学后果"), "at": utc_now()}
+        stage["status"] = "awaiting_input"
+        value = {"unit": ident, "stage": stage["id"], "status": "awaiting_input", "physical_owner_restart": False}
     elif operation == "submit":
         if not isinstance(payload, dict):
             raise ValueError("step submit须--payload实际结果JSON")
@@ -706,6 +846,121 @@ def owner_step(root: Path, state: dict, ident: str, agent_id: str, operation: st
     state["events"].append(checkpoint)
     state["integration"] = None
     return value | {"execution_record": checkpoint, "next": "本owner按next当前小包自主继续；只交最终report或异常"}
+
+
+def checkpoint(root: Path, state: dict, ident: str, agent_id: str, payload: dict) -> dict:
+    """Validate and accept one current scientific increment as one idempotent transaction."""
+    if not isinstance(payload, dict):
+        raise ValueError("checkpoint payload须为JSON对象")
+    unit = find_unit(state, ident)
+    transaction = safe_id(payload.get("transaction_id"))
+    request_sha = digest(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    previous = unit.get("transactions", {}).get(transaction)
+    if previous:
+        if previous["request_sha256"] != request_sha or previous["agent_id"] != agent_id:
+            raise ValueError("事务ID已绑定不同输入或执行者")
+        recorded = find_round(unit, previous["receipt"]["stage"])
+        accepted = recorded.get("accepted") or {}
+        valid = accepted.get("transaction_id") == transaction
+        return {**previous["receipt"], "idempotent_replay": True,
+                "accepted_current": valid, "current_status": recorded["status"]}
+    working = deepcopy(state)
+    target = find_unit(working, ident)
+    bound_owner(target, agent_id)
+    stage = current_round(target)
+    if not stage or stage["status"] != "executing" or payload.get("stage") != stage["id"]:
+        raise ValueError("checkpoint仅接受当前已begin轮；不能预写三遍再回填")
+    validate_finding(target, payload.get("finding", {}))
+    decision = payload.get("decision", "accept")
+    if decision not in {"accept", "revise"}:
+        raise ValueError("checkpoint decision须accept/revise")
+    if decision == "revise" and not payload["finding"].get("required_changes"):
+        raise ValueError("返工须具体required_changes")
+    draft = snapshot(root, target["science_draft"])
+    if payload.get("draft_sha256") != draft["sha256"]:
+        raise ValueError("checkpoint须draft_sha256绑定本次实际科学草稿")
+    previous_science = [old["accepted"] for old in target["rounds"] if old.get("accepted")]
+    if previous_science and draft["sha256"] == previous_science[-1].get("science_draft_sha256"):
+        raise ValueError("科学草稿没有新增或修正；不接受无变化的后续checkpoint")
+    delta = payload.get("delta")
+    if not isinstance(delta, list) or not delta:
+        raise ValueError("checkpoint须具体科学增量delta，不重复阶段报告")
+    raw_science = inside(root, draft["path"]).read_text(encoding="utf-8")
+    for change in delta:
+        if text(change.get("locator"), "科学增量定位") not in raw_science:
+            raise ValueError("delta.locator须是科学草稿中实际标题、块ID或原文片段")
+        if len(text(change.get("summary"), "科学增量与判断变化")) > 800:
+            raise ValueError("delta只交≤800字符变更摘要；完整科学解释保存science.md")
+    science = payload.get("science_state")
+    if not isinstance(science, dict):
+        raise ValueError("须当前短科学状态science_state")
+    for field in ("question", "accepted_boundary", "next_action"):
+        text(science.get(field), "science_state." + field)
+    for field in ("interfaces", "critical_details", "unresolved"):
+        if not isinstance(science.get(field), list):
+            raise ValueError("science_state." + field + "须为定位/未知列表")
+    if len(json.dumps(science, ensure_ascii=False)) > 6000:
+        raise ValueError("短科学状态须≤6000字符；完整解释保留science.md，不截断科学正文")
+    short_exit = payload.get("no_change_reason")
+    if short_exit and (target["kind"] != "knowledge" or stage["base"] != "K1"):
+        raise ValueError("短无增量退出只用于knowledge入口K1")
+    if short_exit:
+        text(short_exit, "无独立价值/无受影响判断理由")
+        if payload.get("candidates") or not payload.get("relation_checks") or payload.get("judgment_changes"):
+            raise ValueError("短退出须必要关系/影响检查、无候选且无判断变化")
+        checked_inputs = allowed_evidence(root, working, target)
+        for check in payload["relation_checks"]:
+            check_target = str(inside(root, text(check.get("target"), "关系检查目标")).relative_to(root))
+            if check_target not in checked_inputs:
+                raise ValueError("短退出关系检查须绑定实际已固定或已接受目标快照")
+            text(check.get("reason"), "关系/影响不变依据")
+    result = {**payload, "artifact": target["science_draft"], "agent_id": agent_id,
+              "answers": [{"question": change["locator"], "answer": change["summary"],
+                           "task_ids": change.get("task_ids", [])} for change in delta],
+              "critical_details": [], "judgment_changes": payload.get("judgment_changes", []), "gaps": payload.get("gaps", [])}
+    submit(root, working, ident, result)
+    stage["pending"]["answers"] = []
+    stage["pending"]["critical_details"] = []
+    stage["pending"]["science_draft_sha256"] = draft["sha256"]
+    receipt = review(root, working, ident, payload["finding"], decision == "accept")
+    if decision == "accept":
+        target["science_state"] = deepcopy(science)
+        if short_exit:
+            target["no_change"] = {"reason": short_exit, "relation_checks": payload["relation_checks"],
+                                   "source_binding": deepcopy(target["inputs"]), "at": utc_now()}
+            for following in target["rounds"]:
+                if following["status"] not in COMPLETE:
+                    following["status"] = "skipped"
+                    following["skip_reasons"] = {key: "K1实际机会/影响检查无增量: " + short_exit for key in following["tasks"]}
+            receipt["next_stage"] = None
+            receipt["no_change"] = True
+        record = find_round(target, payload["stage"])["accepted"]
+        record["transaction_id"] = transaction
+        record["relation_checks"] = payload.get("relation_checks", [])
+        record["science_draft_sha256"] = draft["sha256"]
+        # The increment and scientific draft carry the science; discard adapter duplicates.
+        record["answers"] = []
+        record["critical_details"] = []
+        state_raw = json.dumps(science, ensure_ascii=False, sort_keys=True)
+        state_version = f".research/work/{state['run_id']}/units/{ident}/versions/{stage['id']}/science-state-{digest(state_raw)}.json"
+        existing = inside(root, state_version)
+        if existing.exists() and existing.read_text(encoding="utf-8") != state_raw:
+            raise ValueError("内容寻址的科学状态版本损坏")
+        if not existing.exists():
+            atomic_text(existing, state_raw)
+        record["science_state_ref"] = snapshot(root, state_version)
+        record["files"].append(record["science_state_ref"])
+        record.pop("science_state", None)
+    event = {"event": "scientific_checkpoint", "event_type": "internal_checkpoint", "unit": ident,
+             "stage": payload["stage"], "transaction_id": transaction, "agent_id": agent_id,
+             "draft_sha256": draft["sha256"], "actual_host_call": False, "at": utc_now()}
+    working["events"].append(event)
+    receipt.update(transaction_id=transaction, draft_sha256=draft["sha256"], semantic_verification_by_script=False)
+    target.setdefault("transactions", {})[transaction] = {"request_sha256": request_sha, "agent_id": agent_id,
+                                                         "draft": draft, "receipt": receipt}
+    state.clear()
+    state.update(working)
+    return receipt
 
 
 def validate_finding(unit: dict, finding: dict, final: bool = False) -> None:
@@ -734,8 +989,7 @@ def validate_finding(unit: dict, finding: dict, final: bool = False) -> None:
 
 
 def accepted_binding(unit: dict) -> str:
-    return digest(json.dumps({"sources": unit["sources"],
-                              "rounds": [{"id": item["id"], "status": item["status"], "accepted": item["accepted"]}
+    return digest(json.dumps({"rounds": [{"id": item["id"], "status": item["status"], "accepted": item["accepted"]}
                                          for item in unit["rounds"]]}, ensure_ascii=False, sort_keys=True))
 
 
@@ -747,6 +1001,7 @@ def final_report(root: Path, state: dict, ident: str, report: dict | None = None
     binding = accepted_binding(unit)
     accepted = [item["accepted"] for item in unit["rounds"] if item["accepted"]]
     mapping = [item for record in accepted for item in record.get("candidates", [])]
+    verify(root, [{"path": item["draft"], "sha256": item["sha256"]} for item in mapping])
     result = {"unit": ident, "status": "final_candidate", "owner": unit["owner"],
               "autonomy": autonomy_mode(unit), "candidates": mapping, "sources": unit["sources"],
               "accepted_binding_sha256": binding,
@@ -758,6 +1013,9 @@ def final_report(root: Path, state: dict, ident: str, report: dict | None = None
                          "semantic_verification_by_script": False,
                          "final_review": "not_recorded"}, "publication_authorized_by_script": False}
     if report is not None:
+        if any(helper.get("unit") == ident and helper.get("status") in {"reserved", "bound"}
+               for helper in state.get("runtime", {}).get("helpers", {}).values()):
+            raise ValueError("本单元助手仍有预留/运行，先真实结束并核证结果再交最终report")
         if not isinstance(report, dict):
             raise ValueError("report须为实际最终摘要JSON")
         if autonomy_mode(unit) == "unit":
@@ -788,6 +1046,7 @@ def final_report(root: Path, state: dict, ident: str, report: dict | None = None
         path = f".research/records/runs/{state['run_id']}/reports/{ident}-{digest(json.dumps(saved, ensure_ascii=False, sort_keys=True))}.json"
         write_json(inside(root, path), saved)
         unit["final_report"] = snapshot(root, path)
+        unit["owner_active"] = False  # Scientific delivery ended; this does not close a host thread.
         state["events"].append({"event": "final_report", "event_type": "unit_delivery", "unit": ident,
                                 "report": unit["final_report"], "at": saved["at"]})
     if unit.get("final_report"):
@@ -845,12 +1104,12 @@ def markdown_sections(raw: str, sections: list[str]) -> str:
     return "".join(line for index, line in enumerate(lines) if index in chosen)
 
 
-def resource_packet(state: dict, ident: str, kind: str, index: int, sections: list[str]) -> dict:
+def resource_packet(state: dict, ident: str, kind: str, index: int, sections: list[str], refresh: bool = False) -> dict:
     unit = find_unit(state, ident)
     stage = current_round(unit)
     if stage is None:
         raise ValueError("单元已完成，无当前轮资源；最终交接用report")
-    active = selected_tasks(unit, stage)
+    active = [key for key in stage["tasks"] if unit["tasks"][key]["status"] == "selected"]
     composition = stage["base"] == FINAL[unit["kind"]]
     resources = {"guide": guide_refs(unit, stage, active),
                  "protocol": protocol_refs(unit, stage, composition),
@@ -867,6 +1126,15 @@ def resource_packet(state: dict, ident: str, kind: str, index: int, sections: li
         raise ValueError("显式section须在当前轮已选择小节内，不能借resource加载无关协议")
     raw = path.read_text(encoding="utf-8")
     content = markdown_sections(raw, chosen) if chosen else raw
+    instance = unit["owner"]["agent_id"] if unit.get("owner") else "unbound"
+    key = digest(json.dumps([instance, str(path), digest(path.read_bytes()), chosen], ensure_ascii=False))
+    reference_id = f"{kind}-{index}"
+    reads = unit.setdefault("resource_reads", {})
+    if key in reads and not refresh:
+        return {"unit": ident, "stage": stage["id"], "status": "unchanged", "ref": reference_id,
+                "file_sha256": digest(path.read_bytes()), "content_sha256": digest(content), "sections": chosen}
+    reads[key] = {"ref": reference_id, "path": str(path), "file_sha256": digest(path.read_bytes()),
+                  "sections": chosen, "at": utc_now()}
     return {"unit": ident, "stage": stage["id"], "kind": kind, "index": index, "path": str(path),
             "file_sha256": digest(path.read_bytes()), "sections": chosen,
             "content_sha256": digest(content), "content": content,
@@ -881,6 +1149,8 @@ def allowed_evidence(root: Path, state: dict, unit: dict) -> dict[str, dict]:
         files.update({item["path"]: item for item in other["inputs"]})
     for record in records:
         files.update({item["path"]: item for item in record["files"]})
+        files.update({item["draft"]: {"path": item["draft"], "sha256": item["sha256"]}
+                      for item in record.get("candidates", [])})
         files.update({item["path"]: item for item in record.get("evidence_files", [])})
     return files
 
@@ -906,10 +1176,14 @@ def submit(root: Path, state: dict, ident: str, result: dict) -> dict:
     active_agents = [other for other in state["units"].values() if owner_running(other)]
     if len(active_agents) > state["max_workers"]:
         raise ValueError("实际代理调用超额，先真实中断超额执行并登记interrupt，不能以提交结果消除违规记录")
+    if stage.get("input_binding") is not None and stage["input_binding"] != unit["inputs"]:
+        raise ValueError("执行输入契约已变化；先重新prepare/begin，不能静默替换")
     allowed = allowed_evidence(root, state, unit)
     active = selected_tasks(unit, stage)
-    artifact = snapshot(root, str(Path(unit["output_dir"]) / f"{stage['id']}.md"))
-    if inside(root, artifact["path"]).parent != inside(root, unit["output_dir"]):
+    artifact_path = result.get("artifact", str(Path(unit["output_dir"]) / f"{stage['id']}.md"))
+    artifact = snapshot(root, artifact_path)
+    science_path = unit.get("science_draft")
+    if artifact["path"] != science_path and inside(root, artifact["path"]).parent != inside(root, unit["output_dir"]):
         raise ValueError("阶段结果须实际位于本单元output_dir，不能用别处笔记软链接充当")
     answers = result.get("answers")
     if not isinstance(answers, list) or not answers:
@@ -962,7 +1236,7 @@ def submit(root: Path, state: dict, ident: str, result: dict) -> dict:
     for key in ("judgment_changes", "critical_details", "gaps"):
         if not isinstance(result.get(key), list):
             raise ValueError(f"result.{key}须为列表，无变化/无缺口可明确为空")
-    files = [preserved_version(root, state["run_id"], ident, stage["id"], artifact, "artifact")]
+    files, version_requests = [], [(artifact, "science" if artifact["path"] == science_path else "artifact")]
     candidates = []
     if stage["base"] == FINAL[unit["kind"]]:
         raw = result.get("candidates")
@@ -979,6 +1253,13 @@ def submit(root: Path, state: dict, ident: str, result: dict) -> dict:
             if path.suffix != ".md" or not path.is_relative_to(inside(root, unit["draft_dir"])):
                 raise ValueError("成文产物须在本单位独占draft_dir内，不能由代理写正式页")
             target = validate_target(root, value["target"])
+            writer = state.setdefault("candidate_writers", {}).get(target)
+            if writer and writer != ident:
+                raise ValueError("此目标已绑定其他唯一候选写者: " + target)
+            for other in state["units"].values():
+                if other["id"] != ident and any(target == candidate["target"] for old in other["rounds"]
+                        for candidate in (old.get("accepted") or old.get("pending") or {}).get("candidates", [])):
+                    raise ValueError("同一目标已有其他单元候选；须由唯一写者整合")
             from .notes import validate_note_frontmatter, block_anchors, table_render_issues
             from .semantics import parse_note
             content = path.read_text(encoding="utf-8")
@@ -999,17 +1280,32 @@ def submit(root: Path, state: dict, ident: str, result: dict) -> dict:
             if layout_errors or contract_errors:
                 raise ValueError("候选本地字段/排版契约未通过（不等于科学核验）: " + json.dumps(
                     {"target": target, "layout": layout_errors, "fields": contract_errors}, ensure_ascii=False))
-            candidates.append({"draft": draft["path"], "target": target, "sha256": draft["sha256"]})
-            files.append(preserved_version(root, state["run_id"], ident, stage["id"], draft, f"candidate-{len(candidates)}"))
-            files.append(draft)
+            formal = inside(root, target)
+            candidates.append({"draft": draft["path"], "target": target, "sha256": draft["sha256"],
+                               "target_sha256": digest(formal.read_bytes()) if formal.is_file() else None})
+            version_requests.append((draft, f"candidate-{len(candidates)}"))
         if len({item["target"] for item in candidates}) != len(candidates):
             raise ValueError("同一单元不能对同一正式页提交多份候选")
-    evidence_files = list({item["path"]: {"path": item["path"], "sha256": item["sha256"]}
-                           for item in evidence + coverage}.values())
+    files = [preserved_version(root, state["run_id"], ident, stage["id"], file, label)
+             for file, label in version_requests] + files
+    for index, candidate in enumerate(candidates, 1):
+        candidate["version_ref"] = files[index]
+        state.setdefault("candidate_writers", {})[candidate["target"]] = ident
+    original_evidence = {item["path"]: {"path": item["path"], "sha256": item["sha256"]}
+                         for item in evidence + coverage}
+    immutable_evidence = {path: preserved_version(root, state["run_id"], ident, "sources", file, "evidence")
+                          for path, file in original_evidence.items()}
+    evidence_files = list(immutable_evidence.values())
+    input_versions = [preserved_version(root, state["run_id"], ident, "sources", item, "input")
+                      for item in unit["inputs"]]
+    files = list({item["path"]: item for item in files + input_versions}.values())
+    for item in evidence + coverage:
+        item["version_ref"] = immutable_evidence[item["path"]]
     pending = {"unit": ident, "stage": stage["id"], "files": files, "answers": answers,
                "evidence": evidence, "evidence_files": evidence_files, "coverage": coverage,
                "judgment_changes": result["judgment_changes"], "critical_details": result["critical_details"],
-               "gaps": result["gaps"], "candidates": candidates, "no_change_reason": result.get("no_change_reason"),
+               "gaps": result["gaps"], "delta": result.get("delta", []), "science_state": result.get("science_state"),
+               "input_binding": deepcopy(unit["inputs"]), "input_versions": input_versions, "sources": deepcopy(unit["sources"]), "candidates": candidates, "no_change_reason": result.get("no_change_reason"),
                "dispatch": deepcopy(stage["dispatches"][-1]) if stage["dispatches"] else None,
                "execution": deepcopy(execution[0]), "at": utc_now()}
     stage["pending"], stage["status"] = pending, "awaiting_review"
@@ -1030,7 +1326,7 @@ def review(root: Path, state: dict, ident: str, finding: dict, accept: bool) -> 
     prerequisite_records(root, state, unit)
     verify(root, stage["pending"]["files"])
     verify(root, stage["pending"]["evidence_files"])
-    record = deepcopy(stage["pending"]) | {"finding": finding, "reviewed_at": utc_now()}
+    record = deepcopy(stage["pending"]) | {"finding": deepcopy(finding), "reviewed_at": utc_now()}
     stage["history"].append({"decision": "accept" if accept else "revise", "finding": finding, "at": utc_now()})
     if accept:
         stage["accepted"], stage["status"] = record, "accepted"
@@ -1042,8 +1338,6 @@ def review(root: Path, state: dict, ident: str, finding: dict, accept: bool) -> 
     stage["pending"] = None
     state["integration"] = None
     following = current_round(unit)
-    if following is None and autonomy_mode(unit) == "unit":
-        unit["owner_active"] = False
     return {"unit": ident, "stage": stage["id"], "decision": "accepted" if accept else "revision_required",
             "next_stage": following["id"] if following else None,
             "review_kind": finding.get("review_kind", "legacy_coordinator_review"),
@@ -1059,6 +1353,14 @@ def clear_from(unit: dict, stage: str, reason: str) -> set[str]:
             item["history"].append({"decision": "reopen", "reason": reason, "at": utc_now(),
                                     "previous_result": item["accepted"] or item["pending"]})
             item["accepted"], item["pending"], item["status"] = None, None, "revision_required"
+    unit.pop("final_report", None)
+    unit.pop("final_review", None)
+    if unit.get("science_state"):
+        remaining = [item for item in unit["rounds"] if item.get("accepted")]
+        unit["science_state"] = {**unit["science_state"],
+                                 "accepted_boundary": remaining[-1]["id"] if remaining else "none",
+                                 "unresolved": unit["science_state"].get("unresolved", []) + ["重开受影响判断: " + reason],
+                                 "next_action": "重新准备 " + stage}
     return changed
 
 
@@ -1137,16 +1439,47 @@ def repeat_round(state: dict, ident: str, stage_id: str, reason: str) -> dict:
     return {"unit": ident, "added_round": ident_stage, "goal": reason}
 
 
-def refresh_inputs(root: Path, state: dict, ident: str, values: list[str], reason: str, stage: str | None = None) -> dict:
+def refresh_inputs(root: Path, state: dict, ident: str, values: list[str], reason: str,
+                   stage: str | None = None, mode: str = "append") -> dict:
     unit = find_unit(state, ident)
-    if current_round(unit) and current_round(unit)["status"] in LIVE:
-        raise ValueError("执行/待复核时不可改变材料，先中断或revise")
-    files, sources = freeze_inputs(root, values, unit["kind"])
-    reason = text(reason, "固定材料新增/替换理由")
-    first = stage or next(item["id"] for item in unit["rounds"] if item["status"] != "skipped")
-    result = reopen(state, ident, first, reason)
-    unit["inputs"], unit["sources"] = files, sources
-    return result | {"fixed_inputs": files}
+    reason = text(reason, "固定材料变化理由")
+    if mode not in {"append", "replace", "changed-premise"}:
+        raise ValueError("输入操作须append/replace/changed-premise")
+    if mode != "append" and not stage:
+        raise ValueError("replace/changed-premise须明确最早受影响stage")
+    current = current_round(unit)
+    if current and current["status"] == "awaiting_review":
+        raise ValueError("待审结果先accept/revise，再登记输入变化")
+    if stage:
+        requested = find_round(unit, stage)
+        if current and unit["rounds"].index(requested) > unit["rounds"].index(current):
+            raise ValueError("不能用未来阶段回填输入")
+    if mode == "append":
+        verify(root, unit["inputs"])
+        paths = list(dict.fromkeys(unit.get("declared_input_paths", []) + values))
+    else:
+        paths = values
+    files, sources = freeze_inputs(root, paths, unit["kind"])
+    old = {item["path"]: item["sha256"] for item in unit["inputs"]}
+    new = {item["path"]: item["sha256"] for item in files}
+    if mode == "append" and any(new.get(path) != sha for path, sha in old.items()):
+        raise ValueError("append不能静默替换已固定材料")
+    if mode == "append" and not stage and old == new:
+        return {"unit": ident, "status": "unchanged", "physical_owner_restart": False}
+    result = reopen(state, ident, stage, reason) if stage else {"affected": {}}
+    unit["inputs"], unit["sources"], unit["declared_input_paths"] = files, sources, paths
+    current = current_round(unit)
+    # Current input contract must be prepared again, without a fictitious host restart.
+    if current and (stage or current["status"] in {"executing", "awaiting_input", "preparing"}):
+        current["status"] = "preparing"
+        current.pop("input_gap", None)
+    event = {"event": "input_update", "unit": ident, "mode": mode, "stage": stage,
+             "reason": reason, "previous": old, "current": new, "at": utc_now()}
+    unit.setdefault("input_history", []).append(event)
+    state["events"].append(event)
+    state["integration"] = None
+    return {**result, "unit": ident, "status": current["status"] if current else "all_rounds_accepted",
+            "fixed_inputs": files, "physical_owner_restart": False}
 
 
 def update_constraints(state: dict, update: dict, affected: list[str]) -> dict:
@@ -1202,6 +1535,7 @@ def interrupt(state: dict, ident: str, reason: str) -> dict:
         stage["status"] = "interrupted"
     if autonomous:
         unit["owner_active"] = False
+        unit["owner_interrupted"] = True
     state["events"].append(record | {"unit": ident})
     return record
 
@@ -1231,6 +1565,8 @@ def status(root: Path, state: dict, detail: str = "compact") -> dict:
 
 
 def recovery(root: Path, state: dict, ident: str | None, detail: str = "compact") -> dict:
+    if detail != "full":
+        return compact_recovery(root, state, ident)
     units = {ident: find_unit(state, ident)} if ident else state["units"]
     result = {"run_id": state["run_id"], "goal": state["goal"], "user_constraints": state["constraints"],
               "constraint_history": state["constraint_history"] if detail == "full" else state["constraint_history"][-3:],
@@ -1260,17 +1596,177 @@ def recovery(root: Path, state: dict, ident: str | None, detail: str = "compact"
     return result
 
 
-def candidates(root: Path, state: dict, finding: str | None = None) -> dict:
+def add_unit(root: Path, state: dict, payload: dict) -> dict:
+    """Append a genuinely new scientific unit; existing acceptance is untouched."""
+    reason = text(payload.get("reason"), "新增科学单元必要性/局部补证不足理由")
+    budget = payload.get("budget", {})
+    limit = budget.get("token_limit")
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+        raise ValueError("追加单元须正整数真实授权token_limit")
+    text(budget.get("basis"), "新增单元预算依据")
+    spec = payload.get("unit")
+    if not isinstance(spec, dict):
+        raise ValueError("add-unit须一个实际unit计划")
+    ident = safe_id(spec.get("id"))
+    if ident in state["units"]:
+        raise ValueError("单元ID已存在，不覆盖旧单元")
+    proposed = initialize(root, state["run_id"], {"goal": state["goal"], "units": [spec],
+                           "max_workers": state["max_workers"], "worker_limit_reason": "沿用当前已授权容量",
+                           "autonomy": state.get("autonomy", "unit"), "constraints": state["constraints"]}, existing=state)
+    # initialize validates the combined graph, fixed inputs, scope and exclusive target paths.
+    state["units"][ident] = proposed["units"][ident]
+    state["units"][ident]["budget"] = budget
+    state["candidate_writers"] = proposed["candidate_writers"]
+    for key in state["units"][ident]["tasks"]:
+        state["task_scope"][key] = {"status": "selected", "reason": "计划追加单元: " + reason}
+    state["events"].append({"event": "plan_add_unit", "unit": ident, "reason": reason, "budget": budget, "at": utc_now()})
+    state["integration"] = None
+    return {"status": "unit_added", "unit": ident, "next": "绑定新owner；旧科学边界不回填"}
+
+
+def integrate(root: Path, state: dict, ident: str, agent_id: str, payload: dict) -> dict:
+    """The bound writer receives source-backed exact fragments into its one candidate."""
+    unit = find_unit(state, ident)
+    bound_owner(unit, agent_id, require_active=False)
+    transaction = safe_id(payload.get("transaction_id"))
+    request_sha = digest(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    old = unit.get("integrations", {}).get(transaction)
+    if old:
+        if old["request_sha256"] != request_sha or old["agent_id"] != agent_id:
+            raise ValueError("整合事务ID已绑定不同输入/写者")
+        return {**old["receipt"], "idempotent_replay": True}
+    if not complete(unit):
+        raise ValueError("整合须基于已接受的唯一候选；未成文先由科学owner合入草稿")
+    if unit.get("owner_interrupted"):
+        raise ValueError("物理owner已中断，先如实登记宿主恢复；整合不冒充恢复")
+    if payload.get("owner_observed") is not True:
+        raise ValueError("整合须owner_observed:true及实际本人接收记录")
+    text(payload.get("actual_owner_record"), "实际科学owner接收/确认记录")
+    target = validate_target(root, payload.get("target"))
+    if state.get("candidate_writers", {}).get(target) != ident:
+        raise ValueError("整合只能由此最终目标唯一科学写者执行")
+    stage = unit["rounds"][-1]
+    candidate = next((item for item in (stage.get("accepted") or {}).get("candidates", []) if item["target"] == target), None)
+    if not candidate or payload.get("base_sha256") != candidate["sha256"]:
+        raise ValueError("整合基线不是当前已接受候选")
+    prerequisite_records(root, state, unit)
+    draft = inside(root, candidate["draft"])
+    before = draft.read_text(encoding="utf-8")
+    if digest(before) != candidate["sha256"]:
+        raise ValueError("候选已被外部编辑；先重新审阅本人稿，禁止覆盖")
+    formal = inside(root, target)
+    formal_sha = digest(formal.read_bytes()) if formal.is_file() else None
+    if "target_sha256" not in candidate or formal_sha != candidate["target_sha256"]:
+        raise ValueError("正式目标已被外部编辑；旧整合基线失效")
+    fragments = payload.get("fragments")
+    if not isinstance(fragments, list) or not fragments:
+        raise ValueError("整合须具体局部fragments")
+    allowed = allowed_evidence(root, state, unit)
+    after, evidence = before, []
+    for fragment in fragments:
+        original = text(fragment.get("old"), "待替换的精确原片段")
+        new = fragment.get("new")
+        if not isinstance(new, str) or original == new:
+            raise ValueError("整合须实际变化new，可空表示删除")
+        if before.count(original) != 1 or after.count(original) != 1:
+            raise ValueError("整合原片段必须在基线中唯一；重叠/过期片段不能应用")
+        text(fragment.get("locator"), "整合科学位置")
+        if fragment.get("needs_owner_confirmation", True):
+            text(fragment.get("owner_confirmation"), "科学owner对受影响判断的明确确认")
+        refs = fragment.get("evidence")
+        if not isinstance(refs, list) or not refs:
+            raise ValueError("每个整合片段须实际依据")
+        evidence.extend(located_item(root, item, allowed, "integration.evidence") for item in refs)
+        after = after.replace(original, new, 1)
+    if after == before:
+        raise ValueError("整合未产生候选变化")
+    working = deepcopy(state)
+    result = reopen(working, ident, stage["id"], "科学owner接收有据局部diff")
+    updated = find_unit(working, ident)
+    updated["owner_active"] = True
+    current_round(updated)["status"] = "preparing"
+    evidence_versions = [preserved_version(root, state["run_id"], ident, "sources",
+                                          {"path": item["path"], "sha256": item["sha256"]}, "evidence") for item in evidence]
+    new_sha = digest(after)
+    receipt = {"unit": ident, "target": target, "status": "preparing", "base_sha256": candidate["sha256"],
+               "sha256": new_sha, "transaction_id": transaction, "final_review": "invalidated", "affected": result["affected"]}
+    entry = {"request_sha256": request_sha, "agent_id": agent_id, "receipt": receipt, "fragments": fragments,
+             "evidence_files": evidence_versions, "actual_owner_record": payload["actual_owner_record"], "at": utc_now()}
+    updated.setdefault("integrations", {})[transaction] = entry
+    # Preserve both candidate versions; only the new one can become accepted after checkpoint+final_review.
+    new_version = inside(root, f".research/work/{state['run_id']}/units/{ident}/versions/{stage['id']}/integration-{new_sha}.md")
+    if new_version.exists() and digest(new_version.read_bytes()) != new_sha:
+        raise ValueError("内容寻址的整合版本损坏")
+    if not new_version.exists():
+        atomic_text(new_version, after)
+    entry["candidate_version"] = snapshot(root, str(new_version.relative_to(root)))
+    # Recheck live baselines immediately before the sole candidate writer commits.
+    if digest(draft.read_bytes()) != candidate["sha256"] or (digest(formal.read_bytes()) if formal.is_file() else None) != formal_sha:
+        raise ValueError("整合期间候选/正式目标并发变动；保留外部修改")
+    atomic_text(draft, after)
+    working["events"].append({"event": "candidate_integration", "event_type": "internal_checkpoint", "unit": ident,
+                              "transaction_id": transaction, "agent_id": agent_id, "actual_host_call": False,
+                              "candidate_sha256": new_sha, "at": entry["at"]})
+    working["integration"] = None
+    state.clear()
+    state.update(working)
+    return receipt
+
+
+def compact_recovery(root: Path, state: dict, ident: str | None) -> dict:
+    selected = [ident] if ident else list(state["units"])
+    result = {"run_id": state["run_id"], "units": {}}
+    for key in selected:
+        unit = find_unit(state, key)
+        try:
+            current = next_packet(root, state, key)
+            integrity = "fixed_files_match"
+        except (ValueError, OSError, KeyError, TypeError) as exc:
+            stage = current_round(unit)
+            current = {"stage": stage["id"] if stage else None,
+                       "status": stage["status"] if stage else "all_rounds_accepted", "action": "repair_fixed_inputs"}
+            integrity = str(exc)
+        result["units"][key] = {"owner": unit["owner"], "owner_active": owner_running(unit),
+                               "science_state": unit.get("science_state"), "current": current,
+                               "integrity": integrity, "inputs_ref": state_ref(state, key, "inputs"),
+                               "accepted_ref": state_ref(state, key, "rounds")}
+    return result
+
+
+def candidates(root: Path, state: dict, finding: str | None = None, *, check_target_baselines: bool = True) -> dict:
     mapping = {}
     for unit in state["units"].values():
         if not complete(unit):
             raise ValueError("所有所选单元须完成接受；当前仍有未执行/待审科学轮")
         prerequisite_records(root, state, unit)
+        unit_candidates = [value for stage in unit["rounds"] if stage["accepted"]
+                           for value in stage["accepted"]["candidates"]]
+        if unit_candidates:
+            report = unit.get("final_report")
+            if not report:
+                raise ValueError("实质候选须owner最终report绑定当前科学记录: " + unit["id"])
+            verify(root, [report])
+            if read_json(inside(root, report["path"])).get("accepted_binding_sha256") != accepted_binding(unit):
+                raise ValueError("owner最终report已过期: " + unit["id"])
+            final = unit.get("final_review") or {}
+            if (final.get("accepted_binding_sha256") != accepted_binding(unit) or
+                    final.get("finding", {}).get("decision") != "accept"):
+                raise ValueError("实质候选须当前绑定的实际final_review accept: " + unit["id"])
+            validate_finding(unit, final["finding"], final=True)
+            verify(root, [{"path": item["draft"], "sha256": item["sha256"]} for item in unit_candidates])
+            for candidate in unit_candidates:
+                formal = inside(root, candidate["target"])
+                current_sha = digest(formal.read_bytes()) if formal.is_file() else None
+                if check_target_baselines and "target_sha256" in candidate and candidate["target_sha256"] != current_sha:
+                    raise ValueError("正式目标并发编辑使候选基线失效；先保护用户原文并重新合入: " + candidate["target"])
         for stage in unit["rounds"]:
             if stage["accepted"]:
                 for value in stage["accepted"]["candidates"]:
                     if value["target"] in mapping:
                         raise ValueError("多个单元修改同一正式页；先顺序整合并重新接受具体候选，禁止覆盖")
+                    writer = state.get("candidate_writers", {}).get(value["target"])
+                    if writer and writer != unit["id"]:
+                        raise ValueError("候选写者与计划绑定不符")
                     mapping[value["target"]] = value
     files = [snapshot(root, item["draft"]) for item in mapping.values()]
     result = {"status": "candidate_group", "mapping": mapping, "files": files,
@@ -1287,8 +1783,8 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     names = ("init", "status", "next", "recovery", "dispatch", "submit", "accept", "revise", "reopen",
              "tasks", "repeat", "inputs", "windows", "constraints", "interrupt", "candidates",
-             "start-owner", "adopt-owner", "step", "report", "resource")
-    required_unit = {"next", "dispatch", "submit", "accept", "revise", "reopen", "tasks", "repeat", "inputs", "windows", "interrupt", "start-owner", "adopt-owner", "step", "report", "resource"}
+             "start-owner", "adopt-owner", "step", "report", "resource", "bootstrap", "checkpoint", "add-unit", "integrate")
+    required_unit = {"next", "dispatch", "submit", "accept", "revise", "reopen", "tasks", "repeat", "inputs", "windows", "interrupt", "start-owner", "adopt-owner", "step", "report", "resource", "bootstrap", "checkpoint", "integrate"}
     for name in names:
         command = sub.add_parser(name)
         command.add_argument("--run", required=True)
@@ -1300,9 +1796,16 @@ def main(argv: list[str] | None = None) -> int:
             command.add_argument("--detail", choices=("compact", "full"), default="compact")
         if name in {"start-owner", "adopt-owner"}:
             command.add_argument("--event", type=Path, required=True)
+        if name in {"bootstrap", "resource"}:
+            command.add_argument("--refresh", action="store_true")
+        if name in {"checkpoint", "integrate"}:
+            command.add_argument("--agent-id", required=True)
+            command.add_argument("--payload", type=Path, required=True)
+        if name == "add-unit":
+            command.add_argument("--plan", type=Path, required=True)
         if name == "step":
             command.add_argument("--agent-id", required=True)
-            command.add_argument("--operation", choices=("begin", "submit", "accept", "revise"), required=True)
+            command.add_argument("--operation", choices=("begin", "awaiting-input", "submit", "accept", "revise"), required=True)
             command.add_argument("--payload", type=Path)
         if name == "report":
             group = command.add_mutually_exclusive_group()
@@ -1320,7 +1823,8 @@ def main(argv: list[str] | None = None) -> int:
         if name in {"reopen", "repeat", "windows"}:
             command.add_argument("--stage", required=True)
         elif name == "inputs":
-            command.add_argument("--stage", help="Coordinator-assessed earliest affected round; defaults to first applicable round")
+            command.add_argument("--stage", help="Earliest affected scientific boundary; required for replacement/premise change")
+            command.add_argument("--mode", choices=("append", "replace", "changed-premise"), default="append")
         if name in {"reopen", "repeat", "inputs", "interrupt"}:
             command.add_argument("--reason", required=True)
         if name == "constraints":
@@ -1356,21 +1860,25 @@ def main(argv: list[str] | None = None) -> int:
                 elif command == "report": value = final_report(root, state, args.unit,
                                                                read_json(inside(root, args.report)) if args.report else None,
                                                                read_json(inside(root, args.finding)) if args.finding else None)
-                elif command == "resource": value = resource_packet(state, args.unit, args.kind, args.index, args.section)
+                elif command == "resource": value = resource_packet(state, args.unit, args.kind, args.index, args.section, args.refresh)
+                elif command == "bootstrap": value = bootstrap(root, state, args.unit, args.refresh)
+                elif command == "add-unit": value = add_unit(root, state, read_json(inside(root, args.plan)))
+                elif command == "integrate": value = integrate(root, state, args.unit, args.agent_id, read_json(inside(root, args.payload)))
+                elif command == "checkpoint": value = checkpoint(root, state, args.unit, args.agent_id, read_json(inside(root, args.payload)))
                 elif command == "dispatch": value = dispatch(root, state, args.unit, read_json(inside(root, args.event)))
                 elif command == "submit": value = submit(root, state, args.unit, read_json(inside(root, args.result)))
                 elif command in {"accept", "revise"}: value = review(root, state, args.unit, read_json(inside(root, args.finding)), command == "accept")
                 elif command == "reopen": value = reopen(state, args.unit, args.stage, args.reason)
                 elif command == "tasks": value = decide_tasks(state, args.unit, read_json(inside(root, args.decisions)))
                 elif command == "repeat": value = repeat_round(state, args.unit, args.stage, args.reason)
-                elif command == "inputs": value = refresh_inputs(root, state, args.unit, read_json(inside(root, args.files)), args.reason, args.stage)
+                elif command == "inputs": value = refresh_inputs(root, state, args.unit, read_json(inside(root, args.files)), args.reason, args.stage, args.mode)
                 elif command == "windows": value = locate_windows(root, state, args.unit, args.stage, read_json(inside(root, args.locations)))
                 elif command == "constraints": value = update_constraints(state, read_json(inside(root, args.update)), args.affected)
                 elif command == "interrupt": value = interrupt(state, args.unit, args.reason)
                 else: value = candidates(root, state, args.finding)
                 if archived:
                     value = archive_view(root, run, value, command)
-            readonly = args.command in {"status", "next", "recovery", "resource"} or (
+            readonly = args.command in {"status", "next", "recovery"} or (
                 args.command == "report" and not args.report and not args.finding) or (
                 args.command == "candidates" and not args.finding)
             if not readonly:

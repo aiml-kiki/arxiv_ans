@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import re
 import time
+from copy import copy
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlsplit
 from urllib.request import Request, HTTPRedirectHandler, build_opener
@@ -51,12 +52,78 @@ def _load(root, trace):
                 checked[str(raw_path)] = digest(raw_path.read_bytes()) if raw_path.is_file() else None
             if checked[str(raw_path)] != response["raw_sha256"]:
                 raise ValueError(f"原始查询响应缺失/哈希变化：{response['raw_path']}")
+    if 'budget' not in data:
+        _budget(data)
+        # Old page counts remain recoverable from persistent events, never invented as zero.
+        data['budget']['used']['pages'] = sum(len(read_json(inside(root, pointer['path'])).get('pages', []))
+            + int(pointer['kind'] == 'import') for pointer in data.get('events', {}).values())
+        data['budget'].pop('pages_unavailable_for_legacy', None)
     return data
 
 
 def _save(root, trace, data):
     data["updated_at"] = utc_now()
     write_json(_trace_path(root, trace), data)
+
+
+BUDGET_DEFAULTS = {"queries": 20, "pages": 40, "candidates": 500, "fulltexts": 30, "expansions": 10}
+
+
+def _budget(state):
+    """One cumulative trace ledger, including older events; changing scope does not erase use."""
+    if 'budget' not in state:
+        state['budget'] = {'limits': dict(BUDGET_DEFAULTS), 'used': dict.fromkeys(BUDGET_DEFAULTS, 0),
+                           'fulltext_refs': [], 'legacy_limits': True}
+        for pointer in state.get('events', {}).values():
+            kind = pointer['kind']
+            state['budget']['used']['queries'] += kind in {'search', 'import', 'expand'}
+            state['budget']['used']['expansions'] += kind == 'expand'
+            state['budget']['used']['candidates'] += len(pointer.get('record_ids', []))
+        state['budget']['pages_unavailable_for_legacy'] = bool(state.get('events'))
+    return state['budget']
+
+
+def _remaining(state, name):
+    budget = _budget(state)
+    return max(0, budget['limits'][name] - budget['used'][name])
+
+
+def _retrieval_args(state, args, expansion=False):
+    if not _remaining(state, 'queries') or not _remaining(state, 'pages') or not _remaining(state, 'candidates'):
+        raise ValueError('累计查询/页/候选预算已用完；query scope 明确调整预算后续查')
+    if expansion and not _remaining(state, 'expansions'):
+        raise ValueError('累计扩展轮次预算已用完；query scope 明确调整预算后续查')
+    bounded = copy(args)
+    bounded.limit = min(args.limit, _remaining(state, 'candidates'))
+    bounded.pages = min(args.pages, _remaining(state, 'pages') - int(expansion))
+    return bounded
+
+
+def _record_page(state, record_ids=None, offset=0, limit=20, selection='pending'):
+    if offset < 0 or not 1 <= limit <= 100:
+        raise ValueError('offset 须非负，展示 limit 须为1..100')
+    records = list(state['records'].values()) if record_ids is None else [state['records'][key] for key in record_ids]
+    statuses = {group['report_id']: group['status'] for group in _group_records(state)}
+    if selection == 'pending':
+        records = [record for record in records if statuses[record['report_id']] == '待判断']
+    rows = []
+    for record in records[offset:offset + limit]:
+        rows.append({key: record.get(key) for key in ('record_id', 'report_id', 'work_id', 'title', 'version', 'published', 'origin')})
+        rows[-1].update(abstract=(record.get('abstract') or '')[:1600],
+                       origin=record.get('origin') or {'event_id': record['event_id'], 'provider': record['provider']},
+                       screening=statuses[record['report_id']],
+                       ref=f".research/queries/{state['trace_id']}/state.json#records/{record['record_id']}")
+    end = offset + len(rows)
+    return {'records': rows, 'offset': offset, 'limit': limit, 'total': len(records),
+            'next_offset': end if end < len(records) else None, 'selection': selection}
+
+
+def _retrieval_result(state, event):
+    return {'event': {key: event.get(key) for key in ('id', 'kind', 'status', 'retrieved_records',
+                                                    'reported_total', 'continuation', 'limit_reached', 'budget_limited',
+                                                    'complete_provider_result_set', 'limitations', 'error')},
+            'event_ref': state['events'][event['id']]['path'], 'summary': _summary(state),
+            'page': _record_page(state, event.get('record_ids', []), selection='all')}
 
 
 def _dated(value):
@@ -329,6 +396,12 @@ def _store_event(root, trace, state, event):
                                      "record_ids": event.get("record_ids", []), "event_sha256": digest(event_path.read_bytes())}
     if event["kind"] in {"search", "import", "expand"}:
         state["stop"] = None  # old coverage decision does not cover a new retrieval
+    budget = _budget(state)
+    if event['kind'] in {'search', 'import', 'expand'}:
+        budget['used']['queries'] += 1
+        budget['used']['pages'] += len(event.get('pages', [])) + int(event['kind'] == 'import')
+        budget['used']['candidates'] += len(event.get('record_ids', []))
+        budget['used']['expansions'] += int(event['kind'] == 'expand')
     _save(root, trace, state)
 
 
@@ -362,7 +435,7 @@ def _summary(state):
     status_counts = {name: sum(group["status"] == name for group in reports) for name in ("纳入", "排除", "待判断")}
     known_studies = {study for group in reports if group["status"] == "纳入" for study in group["study_ids"]}
     included_works = {work for group in reports if group["status"] == "纳入" for work in group["work_ids"]}
-    return {"trace_id": state["trace_id"], "question": state["question"], "mode": state["mode"],
+    result = {"trace_id": state["trace_id"], "question": state["question"], "mode": state["mode"],
             "query_events": len(state["events"]), "retrieved_records": len(state["records"]),
             "unique_reports": len(reports), "duplicate_records": len(state["records"]) - len(reports),
             "report_decisions": status_counts, "included_work_ids": len(included_works),
@@ -372,7 +445,14 @@ def _summary(state):
             "study_identity_conflicts": [group["report_id"] for group in reports if group["study_identity_conflict"]],
             "reports_needing_rescreen_after_scope_change": [group["report_id"] for group in reports if group["criteria_stale_records"]],
             "actual_citation_edges": len(state["citation_edges"]), "stop": state.get("stop"),
+            "budget": {"limits": dict(_budget(state)["limits"]), "used": dict(_budget(state)["used"]),
+                       "remaining": {key: _remaining(state, key) for key in BUDGET_DEFAULTS}},
             "coverage_limit": "计数来自实际取得列表；报告数/独立研究数不同，未知研究身份不推断为独立支持。"}
+
+    for key in ('decision_conflicts', 'study_identity_conflicts', 'reports_needing_rescreen_after_scope_change'):
+        result[key + '_count'] = len(result[key])
+        result[key] = result[key][:20]
+    return result
 
 
 def _citation_edge(state, source, target, event_id, location, raw_path, raw_sha256, observed_at=None):
@@ -390,12 +470,29 @@ def search(root, args):
         raise ValueError("start 只用于 arXiv 的非负分页位置；Crossref/OpenAlex 从实际 cursor 分页")
     with locked(root, f"query:{args.trace}"):
         state = _load(root, args.trace)
+        original_limit, original_pages = args.limit, args.pages
+        args = _retrieval_args(state, args)
         event_id = _event_id(state, "search")
         event = {"id": event_id, "kind": "search", "provider": args.provider, "query": args.query,
-                 "observed_at": utc_now(), "requested_limit": args.limit, "pages": [], "record_ids": [],
+                 "observed_at": utc_now(), "requested_limit": original_limit, "effective_limit": args.limit, "pages": [], "record_ids": [],
                  "reported_total": None, "status": "complete", "filters": args.filter, "sort": args.sort,
-                 "pagination_limit": args.pages, "scope_revision": len(state["criteria_history"]) - 1}
-        cursor, consumed = "*", 0
+                 "pagination_limit": args.pages, "order": args.order, "scope_revision": len(state["criteria_history"]) - 1}
+        cursor, consumed = getattr(args, 'cursor', None) or "*", 0
+        if getattr(args, 'resume', None):
+            pointer = state['events'].get(args.resume)
+            prior = read_json(inside(root, pointer['path'])) if pointer else None
+            if not prior or prior['kind'] != 'search' or any(prior.get(key) != getattr(args, key)
+                    for key in ('provider', 'query', 'sort', 'order')) or prior.get('filters') != args.filter:
+                raise ValueError('resume 须为同 provider/query/filter/sort 的真实查询事件')
+            continuation = prior.get('continuation')
+            if continuation is None:
+                raise ValueError('所选事件没有可接续分页位置')
+            if args.provider == 'arxiv':
+                args.start = continuation
+            else:
+                cursor = continuation
+            event['resumes'] = args.resume
+        event['budget_limited'] = args.limit != original_limit or args.pages != original_pages
         try:
             for page in range(args.pages):
                 count = min(args.page_size, args.limit - consumed)
@@ -455,8 +552,9 @@ def search(root, args):
             event["status"] = "partial" if consumed else "failed"
             event["error"] = str(exc)
         finally:
+            event["retrieved_records"] = len(event["record_ids"])
             _store_event(root, args.trace, state, event)
-        return {"event": event, "summary": _summary(state)}
+        return _retrieval_result(state, event)
 
 
 def import_records(root, args):
@@ -477,6 +575,8 @@ def import_records(root, args):
         raise ValueError("持久参数不得含 API 密钥")
     with locked(root, f"query:{args.trace}"):
         state = _load(root, args.trace)
+        if not _remaining(state, 'queries') or not _remaining(state, 'pages') or len(items) > _remaining(state, 'candidates'):
+            raise ValueError('实际导入列表超过累计预算；原始文件保留，明确调整预算后再导入')
         event_id = _event_id(state, "import")
         target = _raw_path(root, args.trace, event_id, 0, "xml" if args.provider == "arxiv" else "json")
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -494,7 +594,7 @@ def import_records(root, args):
                  "input_path": str(source.relative_to(root)), "program_made_network_call": False,
                  "scope_revision": len(state["criteria_history"]) - 1}
         _store_event(root, args.trace, state, event)
-        return {"event": event, "summary": _summary(state)}
+        return _retrieval_result(state, event)
 
 
 def screen(root, args):
@@ -523,12 +623,29 @@ def screen(root, args):
                 raise ValueError("工作/报告/研究身份关联须有人工核验 identity_reason，不能仅凭标题合并")
             if any(name in decision and not decision[name] for name in ("work_id", "report_id_override", "study_id")):
                 raise ValueError("明确身份关联不能为空；未知身份使用不填写")
+            refs = decision.get('fulltext_manifests', [])
+            if not isinstance(refs, list) or any(not isinstance(ref, str) for ref in refs):
+                raise ValueError('fulltext_manifests 须为实际固定全文 manifest 路径数组')
+            for ref in refs:
+                manifest_path = inside(root, ref)
+                if not manifest_path.is_relative_to(root / '.research/sources'):
+                    raise ValueError('全文引用须为持久来源 manifest')
+                manifest = read_json(manifest_path)
+                if digest(inside(root, manifest['source_path']).read_bytes()) != manifest['source_sha256']:
+                    raise ValueError('筛选固定全文哈希变化')
             targets.append((decision, records))
+        new_refs = sorted({ref for decision, _ in targets for ref in decision.get('fulltext_manifests', [])}
+                          - set(_budget(state)['fulltext_refs']))
+        if len(new_refs) > _remaining(state, 'fulltexts'):
+            raise ValueError('累计全文核查预算不足；明确调整预算后提交真实筛选')
+        _budget(state)['fulltext_refs'].extend(new_refs)
+        _budget(state)['used']['fulltexts'] += len(new_refs)
         for decision, records in targets:
             for record in records:
                 item = {"at": utc_now(), "status": decision["status"], "reason": decision["reason"],
                         "criterion_revision": len(state["criteria_history"]) - 1,
-                        "identity_reason": decision.get("identity_reason"), "previous": record["screening"]["status"]}
+                        "identity_reason": decision.get("identity_reason"), "previous": record["screening"]["status"],
+                        "fulltext_manifests": decision.get("fulltext_manifests", [])}
                 record["screening"]["history"].append(item)
                 record["screening"].update(status=item["status"], reason=item["reason"])
                 for source_key, dest_key in (("work_id", "work_id"), ("report_id_override", "report_id"), ("study_id", "study_id")):
@@ -539,7 +656,8 @@ def screen(root, args):
         event = {"id": event_id, "kind": "screen", "observed_at": utc_now(), "status": "complete",
                  "decisions": history, "input_sha256": digest(inside(root, args.input).read_bytes()), "record_ids": []}
         _store_event(root, args.trace, state, event)
-        return {"event": event_id, "decisions": history, "summary": _summary(state)}
+        return {"event": event_id, "event_ref": state["events"][event_id]["path"],
+                "decisions_count": len(history), "summary": _summary(state)}
 
 
 def _seed_record(state, seed):
@@ -560,6 +678,7 @@ def expand(root, args):
         raise ValueError("Crossref 此适配器只提供报告所列后向引用；前向请明确选择 OpenAlex，不自动调用另一来源")
     with locked(root, f"query:{args.trace}"):
         state = _load(root, args.trace)
+        args = _retrieval_args(state, args, expansion=True)
         seed = _seed_record(state, args.seed)
         event_id = _event_id(state, "expand")
         event = {"id": event_id, "kind": "expand", "provider": args.provider, "seed": seed["record_id"],
@@ -637,7 +756,8 @@ def expand(root, args):
                         event["limitations"].append("后向候选数量受请求预算限制；原始引用边全部保留。")
                     event["limitations"].append("后向候选仅有 API 引用身份，标题/摘要待实际元数据补充，不视为已读。")
                 if args.direction in {"forward", "both"}:
-                    cursor, consumed = "*", 0
+                    backward_count = len(event["record_ids"])
+                    cursor, consumed = "*", backward_count
                     for _ in range(args.pages):
                         count = min(args.page_size, args.limit - consumed)
                         if count <= 0:
@@ -664,15 +784,16 @@ def expand(root, args):
                         if not items or len(items) < count or not next_cursor or next_cursor == cursor:
                             break
                         cursor = next_cursor
-                    if event.get("forward_reported_total") is not None and consumed < event["forward_reported_total"]:
+                    if event.get("forward_reported_total") is not None and consumed - backward_count < event["forward_reported_total"]:
                         event["limitations"].append("前向查询未取完 provider 结果集；不能声称覆盖穷尽。")
-                    event["forward_retrieved_records"] = consumed
+                    event["forward_retrieved_records"] = consumed - backward_count
         except (ValueError, TypeError, AttributeError, OSError) as exc:
             event["status"] = "partial" if event["record_ids"] else "failed"
             event["error"] = str(exc)
         finally:
+            event["retrieved_records"] = len(event["record_ids"])
             _store_event(root, args.trace, state, event)
-        return {"event": event, "summary": _summary(state)}
+        return _retrieval_result(state, event)
 
 
 def _components(nodes, edges):
@@ -809,13 +930,15 @@ def main(argv=None):
             command.add_argument("--exclude", action="append", default=[])
             command.add_argument("--budget", required=True)
             command.add_argument("--reason", required=name == "scope")
+            for field, default in BUDGET_DEFAULTS.items():
+                command.add_argument('--' + field + '-budget', type=int, default=default if name == 'init' else None)
             if name == "init":
                 command.add_argument("--mode", choices=("local", "lineage", "systematic"), default="lineage")
         if name in {"search", "expand"}:
             command.add_argument("--provider", choices=PROVIDERS, required=True)
-            command.add_argument("--limit", type=int, default=50)
+            command.add_argument("--limit", type=int, default=20)
             command.add_argument("--pages", type=int, default=1)
-            command.add_argument("--page-size", type=int, default=50)
+            command.add_argument("--page-size", type=int, default=20)
             command.add_argument("--timeout", type=float, default=45)
             command.add_argument("--interval", type=float)
         if name == "search":
@@ -824,6 +947,8 @@ def main(argv=None):
             command.add_argument("--sort")
             command.add_argument("--order", choices=("ascending", "descending"))
             command.add_argument("--start", type=int, default=0)
+            command.add_argument("--cursor")
+            command.add_argument("--resume", help="接续同参数真实事件的分页位置")
         if name == "import":
             command.add_argument("--provider", choices=(*PROVIDERS, "manual"), required=True)
             command.add_argument("--input", required=True, help="库根相对原始 JSON/XML 文件")
@@ -844,6 +969,10 @@ def main(argv=None):
         if name == "status":
             command.add_argument("--records", action="store_true")
             command.add_argument("--reports", action="store_true")
+            command.add_argument("--events", action="store_true", help="显式显示完整事件索引")
+            command.add_argument("--offset", type=int, default=0)
+            command.add_argument("--limit", type=int, default=20)
+            command.add_argument("--selection", choices=("pending", "all"), default="pending")
         if name == "stop":
             command.add_argument("--reason", required=True)
             command.add_argument("--coverage", required=True)
@@ -868,7 +997,11 @@ def main(argv=None):
                         "budget": args.budget, "reason": "初始研究范围"}
             state = {"format": FORMAT, "trace_id": args.trace, "created_at": utc_now(), "question": args.question,
                      "scope": args.scope, "mode": args.mode, "criteria_history": [criteria],
-                     "records": {}, "events": {}, "citation_edges": [], "stop": None}
+                     "records": {}, "events": {}, "citation_edges": [], "stop": None,
+                     "budget": {"limits": {name: getattr(args, name + '_budget') for name in BUDGET_DEFAULTS},
+                                "used": dict.fromkeys(BUDGET_DEFAULTS, 0), "fulltext_refs": []}}
+            if any(value < 0 for value in state['budget']['limits'].values()):
+                raise ValueError('累计预算须为非负整数')
             _save(root, args.trace, state)
         result = {"state": str(target.relative_to(root)), "summary": _summary(state)}
     elif args.command == "search":
@@ -885,16 +1018,36 @@ def main(argv=None):
         result = delta(root, args)
     elif args.command == "status":
         state = _load(root, args.trace)
-        result = {"summary": _summary(state), "criteria_history": state["criteria_history"], "events": state["events"]}
+        result = {"summary": _summary(state), "criteria_revision": len(state['criteria_history']) - 1,
+                  "state_ref": str(_trace_path(root, args.trace).relative_to(root)),
+                  "page": _record_page(state, offset=args.offset, limit=args.limit, selection=args.selection)}
+        if args.events:
+            result['events'] = state['events']
+            result['criteria_history'] = state['criteria_history']
         if args.records:
-            result["records"] = state["records"]
+            keys = [row['record_id'] for row in result['page']['records']]
+            result['records'] = {key: state['records'][key] for key in keys}
         if args.reports:
-            result["reports"] = _group_records(state)
+            groups = _group_records(state)
+            result['reports'] = groups[args.offset:args.offset + args.limit]
     elif args.command == "scope":
         with locked(root, f"query:{args.trace}"):
             state = _load(root, args.trace)
-            state["criteria_history"].append({"at": utc_now(), "scope": args.scope, "include": args.include,
-                                               "exclude": args.exclude, "budget": args.budget, "reason": args.reason})
+            limits = _budget(state)['limits']
+            changes = {name: getattr(args, name + '_budget') for name in BUDGET_DEFAULTS
+                       if getattr(args, name + '_budget') is not None}
+            if any(value < 0 for value in changes.values()):
+                raise ValueError('累计预算须为非负整数')
+            limits.update(changes)
+            criteria = {"at": utc_now(), "scope": args.scope, "include": args.include,
+                        "exclude": args.exclude, "budget": args.budget, "reason": args.reason, "budget_limits": dict(limits)}
+            previous = state['criteria_history'][-1]
+            semantic_change = any(criteria[key] != previous[key] for key in ('scope', 'include', 'exclude')) or bool(
+                args.question and args.question != state['question'])
+            if semantic_change:
+                state['criteria_history'].append(criteria)
+            else:
+                state.setdefault('budget_history', []).append(criteria)
             state["scope"] = args.scope
             if args.question:
                 state["question"] = args.question

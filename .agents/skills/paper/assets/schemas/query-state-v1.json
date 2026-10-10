@@ -34,6 +34,7 @@
       "event_id": {"type": "string"}, "location": {"type": "string"}, "raw_path": {"type": "string"},
       "raw_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "observed_at": {"type": "string"}
     }}},
+    "budget": {"type": "object", "required": ["limits", "used", "fulltext_refs"], "properties": {"limits": {"type": "object", "required": ["queries", "pages", "candidates", "fulltexts", "expansions"], "additionalProperties": {"type": "integer", "minimum": 0}}, "used": {"type": "object", "required": ["queries", "pages", "candidates", "fulltexts", "expansions"], "additionalProperties": {"type": "integer", "minimum": 0}}, "fulltext_refs": {"type": "array", "items": {"type": "string"}}}},
     "stop": {"type": ["object", "null"]}
   }
 }

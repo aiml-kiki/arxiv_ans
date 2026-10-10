@@ -19,7 +19,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, default=default_root())
     parser.add_argument('command', choices=('source', 'search', 'query', 'workflow', 'derive',
-                                           'check', 'review', 'publish', 'finish', 'canvas'))
+                                           'check', 'review', 'publish', 'finish', 'canvas', 'runtime', 'usage'))
     parser.add_argument('arguments', nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     root = args.root.resolve()
@@ -42,6 +42,12 @@ def main(argv=None):
         if args.command == 'source':
             from lib import sources
             value = sources.main(['--root', str(root), *remaining])
+        elif args.command == 'runtime':
+            from lib import runtime
+            value = runtime.main(['--root', str(root), *remaining])
+        elif args.command == 'usage':
+            from lib import usage
+            value = usage.main(['--root', str(root), *remaining])
         elif args.command == 'review':
             from lib import publishing
             value = publishing.main(['--root', str(root), *remaining])

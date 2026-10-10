@@ -1,6 +1,6 @@
 ---
 name: paper-fetch
-description: 显式运行 paper-fetch 或由已授权 paper 工作流调用时，确认论文身份、固定来源版本、取得和解析原文，核对实际材料能力与缓存。
+description: 明确调用或已授权 paper 流程中固定论文身份、版本与可读原文；取得和解析不等于阅读。
 ---
 
 # paper-fetch · 可信研究材料

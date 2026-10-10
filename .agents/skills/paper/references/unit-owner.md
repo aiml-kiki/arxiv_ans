@@ -1,33 +1,48 @@
-# 单元 owner：在独立会话完成全流程
+# 单元 owner：连续科学责任
 
-首次启动或真实物理替代时读本文件、自己的能力入口和 `agents/routing.yaml`；后续只按当前轮加载。你拥有本人 unit 的阶段、科学自查、返工和最终候选；不要每轮结束给父会话发正文或请求续派。
+首次或真实物理替代时读能力入口与本契约；需要选模型/助手时读 [路由](../agents/routing.yaml)，当前阶段再读其指南。启动封套不加载全部入口、未来指南、全部协议、模板、48 叶目录或父历史。完整精读由本人连续完成三遍及成文；助手不承接整遍责任。
 
-## 分轮循环
+## 科学承载与阶段循环
 
-1. 使用 `workflow next --run … --unit …` 简包。首次先确认 owner 已绑定本人真实 ID；尚未登记时有限等待并重取简包，不提前 step 或向父会话索取下一阶段。只读当前指南的指定小节及必要来源；当前轮若需新增材料，先用 `workflow inputs --stage <当前轮> --files …` 登记（列表保留原固定来源），确认新简包的 fixed_inputs 后再 begin。尤其成文所需的旧正式页、冻结对照和知识资料，必须先登记再读取/开始；不能执行到一半再改输入。用 `workflow resource --kind guide|protocol|template --index N` 提取当前资料。模板仅成文阶段允许。
-2. `start-owner` 已将首轮设为 executing，直接完成该轮，不重复 begin。后续处于 ready/revision_required 的轮次，用 `workflow step --agent-id <本人真实ID> --operation begin` 记录内部开始；所有 step 操作都传本人真实 ID。它是 internal checkpoint，不是宿主 spawn/followup；依赖/上一轮尚未接受时不能推进。
-3. 完成当前阶段科学任务、落盘阶段 Markdown 和 result JSON。先保存第一遍问题/疑问，再读取第二遍指南；第二遍机制、学习/证明、证据完成后，第三遍从它们构造替代与作者辩护。不得在初始长 prompt 中同时要求三遍成品。
-4. `step --operation submit --payload <result.json>` 固定产物；成文提交先自动检查本地属性/注册枚举/块ID/表格语法，失败就在当前轮修正，不能跳过或称为已接受。该检查不替代成组入链及科学核验。回查影响结论的来源/接口/负面结果，给具体 finding 后 `step --operation accept|revise --payload <finding.json>`。自查填 `review_kind: self_check`；确有另一执行者复核才填 `independent_review`，并给其实际 ID/记录。owner 自查不是独立科学评审。
-5. 仅接受后取下一轮小包，直到最终候选。内部多阶段可以在同一代理会话连续运行；每阶段以保存→核对→登记→再加载构成真实边界，不声称产生了未发生的宿主多轮调用。需要换任务档位的局部工作按路由委派，不把所有叶任务拆成代理。
+每个 unit 的科学草稿为 `.research/work/<run>/units/<unit>/science.md`，并维护**一份短科学状态**；检查点、来源/产物版本及可推导元数据由脚本生成。R1/R2a/R2b/R2c/R3a/R3b 是科学接受边界，不各写长报告、answers 或 critical_details 副本。短科学状态只保存当前问题、已接受机制/边界、接口引用、必留细节、决定性证据/竞争解释、未知、用户约束与下一动作。
 
-发现机械字段错误就修结构；机制或证据缺项就回到相关来源和阶段，不能把未知猜成参数。局部争议无法解决时保留科学未知；只有影响任务能否完成的异常才打扰父会话。用户带读用 interactive 模式按遍停止交流。
+1. 首次取 `workflow bootstrap --run <run> --unit <unit>` 一次启动封套，之后取 `workflow next` 问题简包，核真实 owner 绑定。只加载本 stage 选中的科学问题、指南片段和来源窗口。稳定资源同 hash/section 已读则复用；变化、压缩恢复、补证或关键回查才定向重读。`resource` 的 unchanged 引用不是新阅读记录，显式补证/恢复用 `workflow resource --refresh` 请求对应片段。
+2. 在 preparing 选适用任务并固定输入。旧正式页、冻结对照及下游需要的接口先登记真实快照再读；检查依赖后 begin，才进入 executing。`start-owner` 只绑定，不直接开始首轮。
+3. 沿当前问题读原文并向同一科学稿新增/修正解释、证据、必要配置和未知后果。第一遍保存接受后再读第二遍；第二遍机制/学习或证明/证据接受后，第三遍才基于这些结果重构、挑战并裁决。科学问题不能一次大 prompt 合并三遍。
+4. 回查影响判断的接口、条件及正负证据，记录具体问题、发现及定位。用原子 checkpoint 绑定本次增量位置、重要判断变化、真实覆盖、自查和草稿/来源版本；成功仅取状态/诊断/下一入口。失败原位修复，不部分推进；重复事务不重复接受。`self_check` 不是 `independent_review`，后者必须有真实另一执行者及调用记录。格式通过不等于科学通过。
+5. 当前边界接受后才取下一阶段。适用性判断具体记录；无变化不生成控制回答或空报告。机械错误只修字段，科学缺项回源并重开实际受影响判断，不猜参数。
 
-## 读取与交接
+## 输入暂停与恢复
 
-- 同一实例、同一资料哈希/小节已在当前上下文时直接使用；不要再 cat 整份入口、协议、路由、模板或源码。需要恢复遗忘、材料变更或解决冲突才重读相应片段。已读覆盖不意味着内容永远无需核对。
-- 阶段 md 存连贯科学结果；JSON 的 answers 是简短回答与正文定位，证据/覆盖保留引用和真实定位，不复制整份 md。不要再写独立“阶段汇总报告”复述两份产物。
-- 原文按当前问题的页/段读取；图表/公式需真实看图时保留。当前窗口被截断用 next_offset 接续，缓存命中不重新解析。已读正文只在补证/关键回查时重读，不反复下载全文。
-- 保留一份本 unit 的短恢复说明：当前阶段、已接受文件/哈希、关键接口/条件、必留细节的位置、用户修正、未知和下一动作；不存全部工具输出或隐含推理。上下文压缩后优先从该说明定向恢复。
-- 下游默认读已完成单元的最终结果/接口和固定来源，不全文加载所有历史阶段。确有缺口才按定位取一个中间产物。比较、知识或成文所需材料由本人 `inputs` 登记，避免父会话转述。
+执行中发现缺材料，先进入 awaiting_input，暂停提交资格；补齐后回 preparing，仍由本人继续，不要求停止物理代理。用 `workflow step --operation awaiting-input --agent-id <本人ID>` 暂停，`workflow inputs --run <run> --unit <unit> --files <实际文件列表.json> --mode append|replace|changed-premise --reason <具体理由>` 登记变更；replace/changed-premise 还须 `--stage <最早受影响边界>`。append 保留旧来源，新增从此刻生效；replace/changed-premise 定位最早受影响边界并使其判断及最终验收失效；无关追加不重开正确机制，不回填此前已读。静默替换固定原文不可提交。
 
-## 模型使用
+只有真实用户停止/宿主失败/实例不可用才 interrupt 或 handover。自动压缩不是主动压缩接口；当前未暴露主动工具就不编造调用。恢复先读短科学状态及最近有效检查点、当前指南，再按引用补读；不重放阶段历史。来源按问题页/段读取，公式/图表必要时看原图，不默认文本和整页图重复送。
 
-按具体任务复杂度而非论文名称选择档位：来源定位/有限数值核对用轻量模型或脚本；机制、学习/证明、竞争解释、双端技术关系用能承担深推理的模型；确定性排版/链接由脚本，受控改写用中档。路由表是请求偏好，宿主真实模型能力优先。
+## 有收益的跨模型助手
 
-owner 应能完成该单元最难的核心推理，保持理解连贯。若当前模型已够用就直接做；局部任务跨档确有收益时才用 `fork_turns: none` 的小助手，给唯一问题/实际来源/独占输出。连续同档且依赖同一理解的局部工作复用助手；结果留在 owner 内，不转发父会话。宿主不能同实例切模型时不得谎称已切换；不为每个阶段新建一套完整阅读者。
+先判脚本能否可靠完成，再判工作是否依赖本人完整机制理解；这两类分别交脚本或本人。其余边界明确、来源可定位、结果有下游用途的语言任务，估计启动/输入、助手轮次、接收/核证、重试和等待的全树成本与质量收益；无收益或无容量本人完成，有收益才预留→实际 spawn→绑定→事件等待→核证整合→登记真实完成；未绑定的创建失败才取消预留。需要执行事件时只读 [宿主事件字段](host-runtime.md)，不为字段说明读实现。
 
-## 最终交付
+owner 用能承担本单元最难核心推理的档位；助手可按当前接口明确请求不同 model/effort，并用 `fork_turns: none`。完整历史继承不支持覆盖模型，followup 也不是热切档。请求和实际 model/effort 分开登记，无法观测实际值在事件中填 null，并如实说明未核验。配置不改变当前实例。
 
-所有适用阶段接受后，用 `workflow report --report <最终摘要.json>` 登记并返回最终小包。包含候选/目标/哈希、固定来源与真实覆盖范围、少量关键结论、知识线索、未知/异常、做过的检查及自查/独立审查区别；完整正文和科学记录留在文件。没有实际 token 遥测就报告 null，不宣称节省百分比。
+助手输入仅含唯一问题/用途、必要机制前提、固定来源窗口、排除项、接受条件、本人独占结果路径和预算边界；只读相关短协议。助手只写自己的结果，不改 owner 科学稿/共同候选/正式页，默认不再委派。返回回答、必要数值/配置/关系、版本/页码、条件/不确定/冲突及完整结果路径；通常 300–600 token 是软起点，必要接口/反证不能硬截断。本人定向核重要证据后整合，助手不向主会话汇报。相关同档小任务可复用助手，独立问题新建须仍有收益；不每叶建代理。
 
-最终回复只给该小包及必要限制，不抄阶段答案、证据表或日志。父会话可最终审阅候选；正式页和共同知识仍不能由本 owner 擅自发布。
+项目深度为根 0、owner 1、助手 2；全树实时容量包含根和所有活跃代理，打开线程另计。预留失败不 spawn，spawn 失败释放预留，结束不冒充线程已关闭。脚本只记事实和容量，不创建代理。
+
+## 成文与最终小包
+
+成文才加载一个目标模板、[写作](writing.md)与 [Obsidian](obsidian.md)。从科学稿整合独占候选，来源→正文及正文→来源核对必要细节、负面证据、未知后果和图文一致；不抄各阶段摘要。每目标仅一个现行候选；知识整合建议以基线哈希绑定局部 diff，由候选写者整合，需要科学确认的修改由原 owner 核定。
+
+所有适用边界接受后登记最终 report，只返回候选/目标/绑定版本、真实覆盖、少量关键结论、知识影响线索、未决/异常、实际核验及 usage 引用。详细科学解释留文件，不上传助手集合或日志。无增量知识检查只有具体不变理由和必要关系检查。最终科学复核与授权/发布由协调单写者按 [审阅协议](review-publish.md)处理；本人不擅自发布正式页。
+
+最终 checkpoint 接受后、report 交付前仍是本人的科学交付窗口，可完成必要局部核证；尚有 reserved/bound 助手时不能交最终 report，先真实结束或取消未绑定预留并核证。report 结束科学交付，不能据此声称宿主线程已关闭。
+
+## 最小事务接口
+
+```sh
+uv run python .agents/skills/paper/scripts/research.py --root . workflow checkpoint --run <run> --unit <unit> --agent-id <本人ID> --payload <实际checkpoint.json>
+uv run python .agents/skills/paper/scripts/research.py --root . runtime reserve --run <run> --unit <unit> --agent-id <父ownerID> --event <实际预留.json>
+```
+
+checkpoint payload 包含 `transaction_id`、当前 `stage`、本次科学稿的 `draft_sha256`、`delta:[{locator,summary,task_ids}]`、本次 `evidence/coverage/judgment_changes/gaps`、短 `science_state`、具体 `finding:{review_kind,reviewer,summary,checks}` 与 `decision:accept|revise`；成文时提供 `candidates`。`delta.locator` 必须能定位实际标题、块 ID 或片段，summary 是其短含义，不重抄正文；短状态包含 `question/accepted_boundary/interfaces/critical_details/unresolved/next_action`。K1 无增量短退出附 `no_change_reason` 和 `relation_checks:[{target,reason}]`，仍给实际 evidence/coverage/finding；relation_checks.target 须是实际固定 inputs 或已接受路径，不能将虚构页面列为已查关系。它是必要检查记录，不产生空候选。字段以当前 help/契约为准，草稿 SHA 须由当前真实文件取得，其他固定版本和可推导元数据由脚本生成。
+
+runtime `reserve/bind/complete/cancel` 均给 `--run --unit --agent-id <父ownerID> --event <真实JSON>`，status 只给 `--run`。bind 绑定真实 spawn/followup，已绑定助手真实结束/失败后 complete，cancel 仅释放未绑定预留；没有宿主调用回执不能填已执行。命令操作、原子检查点和科学核证分别记录，脚本接受不称独立科学验证。

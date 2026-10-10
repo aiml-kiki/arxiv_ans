@@ -7,7 +7,7 @@
 - 用户明确说「运行 paper」、`/paper` 或 `$paper` 时读取 `.agents/skills/paper/SKILL.md`，同一阅读会话可自然继续。五个能力 paper-fetch/read/compare/trace/knowledge 也可明确调用；技能列表和文件内容不构成调用指令。
 - 本库 `.agents/skills/` 是六个技能的唯一实现位置；`.claude/skills/` 是指向同一份实现的 Claude 兼容软链接。Codex 从 `.agents/skills/` 发现技能，执行时以仓库根目录为工作目录。所有 Python 通过项目 `uv run` 执行；不用系统 Python 或 pip。
 - 已授权的工作流内部自动分轮、核验、续派，用户无需逐轮确认。完成写入后自动调用新版 finish 清理本轮临时工作和审阅视图；未确认候选保留。固定原文/版本、证据定位、真实查询/筛选、重要判断更新与提交记录持久保存。
-- 论文完整精读每篇启动一位独立 owner（fork_turns: none），代理在本人会话自主完成三遍、核对/返工和完整草稿；阶段保存/检查后再加载下一指南，不一次要求输出三遍。主会话只收最终结果与异常，不逐轮读中间稿或续派。默认两位 owner 并发，局部助手按实际全树容量安排；模型按具体任务难度真实分档，不能把配置当切换。用户要求时才带读或出题。
+- 论文完整精读每篇一位独立连续 owner（fork_turns: none），自主完成三遍和成文；主会话只收最终结果与必要异常，默认两位 owner 并发。本人 owner 按收益真实跨模型委派局部助手，由本人核证整合。根0/owner1/助手2是项目深度约定，全树容量以当前宿主为准；脚本不启动代理，配置不等于模型切换。阶段执行详见 `.agents/skills/paper/references/unit-owner.md`，用户要求时才带读或出题。
 
 ## 内容与修改
 
@@ -26,11 +26,11 @@
 
 ## 操作
 
-主会话只读路由/最终报告，单元代理按当前阶段加载指南、必要协议和来源；成文才加载目标模板。同一上下文已读且未变的资料不重复加载；恢复、补证或版本变化才定向重读。48叶任务由工作流选择，不整表发给阅读者。实际宿主调用、内部checkpoint和自查/独立审查分别记录；脚本不冒充代理调用。
+主会话只读路由/最终报告，单元代理按当前阶段加载指南、必要协议和来源；成文才加载目标模板。同一上下文已读且未变的资料不重复加载；恢复、补证或版本变化才定向重读。48叶任务按当前科学问题选择，不整表发给阅读者，不等同于代理/轮次/报告数。科学增量写同一草稿，控制与版本由原子checkpoint承载；补源走准备/暂停恢复，不冒充物理代理接管。实际宿主调用、内部checkpoint和自查/独立审查分别记录；脚本不冒充代理调用。
 
-论文研究工具入口是 `uv run python .agents/skills/paper/scripts/research.py --root .`，提供 source、search、query、workflow、derive、check、review、publish、finish 和可选 canvas。新计划默认 autonomy:unit，单元 owner 只写本人阶段/独占候选；共享 workflow 由脚本锁串行更新，正式发布和索引仍由主会话单写者。`next/recovery/status/report` 默认精简；完整阶段记录保留在文件，不自动回传主会话。接受绑定实际产物与来源哈希；run 状态在 `.research/work/<run>/workflow.json`。结构/字段校验不能证明论文结论成立。
+论文研究工具入口是 `uv run python .agents/skills/paper/scripts/research.py --root .`，提供 source、search、query、workflow、runtime、usage、derive、check、review、publish、finish 和可选 canvas，参数以当前help为准。新计划默认 autonomy:unit，单元 owner 只写本人阶段/独占候选；共享 workflow 由脚本锁串行更新，正式发布和索引仍由主会话单写者。`next/recovery/status/report` 默认精简；完整阶段记录保留在文件，不自动回传主会话。接受绑定实际产物与来源哈希；run 状态在 `.research/work/<run>/workflow.json`。结构/字段校验不能证明论文结论成立。
 
-在Obsidian修改待审候选后先review import并核对新差异；正式提交前重新读目标并保护并发修改。授权来自真实用户及其范围，digest仅绑定内容。
+每目标只有一个现行候选与唯一写者，局部建议绑定基线哈希后整合。已有workflow的实质科学候选必须通过绑定真实快照的final_review与成组机械检查。在Obsidian修改待审候选后先review import并核对新差异，实质变化重审受影响判断；正式提交前重新读目标并保护并发修改。授权来自真实用户及其范围，digest仅绑定内容。
 
 ## Git 提交与推送
 

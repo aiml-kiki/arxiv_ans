@@ -1,8 +1,8 @@
 # T6 · 开放问题的 topic 候选
 
-**开始前预检：** 保持本轮 ready/revision_required；先确认需要的旧页、冻结对照、知识/接受产物是否已在 fixed_inputs 或 accepted 中。新增材料用 `workflow inputs --stage <本轮> --files …` 登记，文件列表保留已有固定来源；重新取 next 核对后才 begin。不要先 begin 再登记，也不要提前读取未登记旧稿。已执行中才发现缺输入时停止并真实中断/恢复，不绕过状态保护。
+**输入准备：** 按 [owner 契约](../../paper/references/unit-owner.md#输入暂停与恢复)登记旧页/冻结对照/相关知识的真实快照；缺输入时 awaiting_input→补齐→preparing，本人继续。接受产物按引用使用，成文才加载下面资源。
 
-本轮 C9；若出现未分析跨来源判断，先请求必要 C1–C8 当前任务。加载接受研究地图/覆盖、有关知识与比较、[topic 模板](../assets/topic.md)、[写作](../../paper/references/writing.md)及 [Obsidian](../../paper/references/obsidian.md)。
+本轮 C9；跨来源缺项先判局部补证或新增比较单元，不能把 C1–C8 塞进 trace 任务表。确需新单元时协调者用 `workflow add-unit --run <run> --plan <追加计划.json>`，记录 `reason`、真实 `budget:{token_limit,basis}` 及原计划结构的 `unit`；检查依赖/独占目标后真实启动新 owner，接受接口形成前暂停相关判断。加载接受研究地图/覆盖、有关知识与比较、[topic 模板](../assets/topic.md)、[写作](../../paper/references/writing.md)及 [Obsidian](../../paper/references/obsidian.md)。
 
 焦点答案与限制→范围/覆盖→必要概念与选读→路线谱系→综合证据/取舍→未解问题/研究机会→讨论/增量。路线讲关键接口及瓶颈，核心判断有来源和范围；已有深入比较页总结并回链，不复制整篇。
 
@@ -10,4 +10,4 @@
 
 双向核对覆盖限制与判断、来源与技术关系。保留旧有效独特内容、稳定问题块及用户原话；只有实质变化写短研究增量。交付连贯 topic 候选、关键依据/限制和知识影响；共同页由协调者审阅提交。
 
-交付前执行共用写作的五项展示检查：阅读路径逐项说明目的，路线图与正文对应，综合取舍与未解问题分开；保留普通正文中的注册字段、真实回链和可编辑讨论入口。仅报告实际完成的结构/界面检查。
+交付前按 [共用写作](../../paper/references/writing.md#交付前的展示检查)做展示核对；重点核选读目的、覆盖边界、路线关系与正文一致，综合取舍和真实未解问题有不同用途。结构检查与实际界面检查分别如实记录。
