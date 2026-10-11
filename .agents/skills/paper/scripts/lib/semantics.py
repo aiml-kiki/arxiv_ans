@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 import re
 
-from .core import default_root, digest, inside, locked, read_json, safe_id, utc_now, write_json
+from .core import atomic_text, default_root, digest, inside, locked, read_json, safe_id, utc_now, write_json
 from .notes import note_paths, read_note, visible_markdown, wiki_parts
 
 FORMAT = "paper-semantic-v1"
@@ -30,6 +30,10 @@ ALLOWED_FIELDS = {
     "delta": {"研究对象", "增量类型", "旧判断", "新判断", "处理决定", "受影响", "证据"},
 }
 FIELD = re.compile(r"^\*\*([^*\n：:]+)[：:]\*\*\s*(.*?)\s*$")
+READABLE_FIELD = re.compile(r"^\*\*([^*\n：:]+)\*\*[：:]\s*(.*?)\s*$")
+RECORD_CALLOUT = re.compile(r"^>\s*\[!note\]-\s*(判断记录|来源与判断记录|关系记录|问题记录|更新记录)\s*$", re.I)
+RECORD_TYPES = {"判断记录": "命题", "来源与判断记录": "命题", "关系记录": "关系",
+                "问题记录": "未解问题", "更新记录": "知识更新"}
 ANCHOR = re.compile(r"(?<!\S)\^([A-Za-z0-9-]+)\s*$")
 WIKI = re.compile(r"\[\[([^\]\n]+)\]\]")
 PLACEHOLDER = re.compile(r"^(?:<.*>|待填写|TODO|TBD|\.\.\.|…)$", re.I)
@@ -38,6 +42,15 @@ INDEX_PATH = ".research/index/semantic.json"
 
 def _filled(value):
     return bool(str(value).strip()) and not PLACEHOLDER.fullmatch(str(value).strip())
+
+
+def _scientific_fingerprint(record):
+    values = {key: value for key, value in record.items()
+              if key not in {"key", "id", "path", "line", "fields", "fingerprint", "note_sha256"}}
+    values["evidence"] = [{key: item.get(key) for key in
+                           ("relation", "source_id", "version", "location", "verification", "link",
+                            "rationale", "requested_sha256")} for item in record.get("evidence", [])]
+    return digest(json.dumps(values, ensure_ascii=False, sort_keys=True))
 
 
 def _slots(value):
@@ -109,16 +122,108 @@ def _evidence(value):
             "requested_sha256": slots.get("哈希")}
 
 
+def _registration_view(text):
+    """Expand only explicit record callouts, preserving physical line locators.
+
+    Ordinary quotes, fenced examples and comments never register an object.
+    The scientific paragraph and its stable anchor remain outside the callout.
+    """
+    visible = visible_markdown(text).splitlines()
+    raw = text.splitlines()
+    lines, original, locations, errors = [], [], [], []
+    index = 0
+    while index < len(visible):
+        header = RECORD_CALLOUT.fullmatch(visible[index])
+        if not header:
+            lines.append(visible[index]); original.append(raw[index]); locations.append(index)
+            index += 1
+            continue
+        start, rows = index, []
+        index += 1
+        while index < len(visible) and re.match(r"^>($|\s)", visible[index]):
+            content = re.sub(r"^> ?", "", raw[index])
+            masked = re.sub(r"^> ?", "", visible[index])
+            if masked.strip():
+                rows.append((index, content))
+            index += 1
+        try:
+            expanded = [(start, "研究对象", RECORD_TYPES[header[1]])]
+            defaults, judgement, reason = {}, None, None
+            parsed = []
+            for location, content in rows:
+                match = READABLE_FIELD.fullmatch(content) or FIELD.fullmatch(content)
+                if not match:
+                    raise ValueError("登记提示块只接受明确字段；解释、依据和重要限制放在可见正文")
+                name, value = match[1].strip(), match[2]
+                if name == "来源":
+                    if defaults:
+                        raise ValueError("共同来源只允许一行；不同来源在各条证据中明确填写")
+                    source, slots = _slots(value)
+                    if set(slots) - {"版本", "核验", "哈希"}:
+                        raise ValueError("共同来源只接受版本、核验及必要哈希")
+                    defaults = {"来源": source, **slots}
+                    if any(not _filled(defaults.get(key, "")) for key in ("来源", "版本", "核验")):
+                        raise ValueError("共同来源须明确来源、版本及核验状态")
+                    if defaults["核验"] not in {"定位已核", "未核"}:
+                        raise ValueError("共同来源核验只能为定位已核/未核")
+                    if defaults.get("哈希") and not re.fullmatch(r"[0-9a-f]{64}", defaults["哈希"]):
+                        raise ValueError("来源哈希须为完整 SHA-256")
+                elif name == "判断":
+                    if judgement is not None or header[1] not in {"判断记录", "来源与判断记录"}:
+                        raise ValueError("判断简写只允许命题记录中一行")
+                    claim_type, slots = _slots(value)
+                    if set(slots) != {"提出者", "裁决"}:
+                        raise ValueError("判断简写须明确类型｜提出者=作者/分析者｜裁决=实际状态")
+                    judgement = (location, claim_type, slots)
+                elif name == "理由":
+                    if reason is not None:
+                        raise ValueError("理由只允许一行")
+                    reason = (location, value)
+                elif name in EVIDENCE_TYPES:
+                    parsed.append((location, "证据", name + "｜" + value))
+                else:
+                    parsed.append((location, name, value))
+            if judgement is not None:
+                if reason is None or not _filled(reason[1]):
+                    raise ValueError("判断简写必须保留具体理由")
+                location, claim_type, slots = judgement
+                expanded.extend([(location, "判断类型", claim_type), (location, "提出者", slots["提出者"]),
+                                 (reason[0], "裁决", slots["裁决"] + "｜理由=" + reason[1])])
+            elif reason is not None:
+                raise ValueError("单独理由须配合判断简写；完整裁决使用 裁决｜理由=…")
+            for location, name, value in parsed:
+                if name == "证据" and defaults:
+                    kind, slots = _slots(value)
+                    other_source = any(key in slots and slots[key] != defaults.get(key)
+                                       for key in ("来源", "版本"))
+                    if other_source:
+                        if any(not _filled(slots.get(key, "")) for key in ("来源", "版本", "核验")):
+                            raise ValueError("不同来源/版本的证据须独立填写来源、版本及核验，不能继承共同核验或哈希")
+                    else:
+                        slots = {**defaults, **slots}
+                    value = "｜".join([kind] + [f"{key}={item}" for key, item in slots.items()])
+                expanded.append((location, name, value))
+            for location, name, value in expanded:
+                field = f"**{name}：** {value}"
+                lines.append(field); original.append(field); locations.append(location)
+            # End this explicit registration before following prose or callouts.
+            lines.append("<!-- record boundary -->"); original.append(""); locations.append(index - 1)
+        except ValueError as exc:
+            errors.append({"line": start + 1, "message": str(exc)})
+            lines.append("<!-- invalid record -->"); original.append(""); locations.append(start)
+    return lines, original, locations, errors
+
+
 def parse_note(path, text, line_offset=0):
     """Return explicit records and diagnostics. Unregistered prose stays prose."""
-    lines = visible_markdown(text).splitlines()
-    original = text.splitlines()
-    records, errors, used = [], [], set()
+    lines, original, locations, view_errors = _registration_view(text)
+    records, errors, used = [], [{"path": path, "line": item["line"] + line_offset,
+                                "message": item["message"]} for item in view_errors], set()
     for index, line in enumerate(lines):
         start = FIELD.fullmatch(line)
         if not start or start[1].strip() != "研究对象":
             continue
-        label = f"{path}:{index + 1 + line_offset}"
+        label = f"{path}:{locations[index] + 1 + line_offset}"
         try:
             object_type = OBJECT_TYPES.get(start[2])
             if not object_type:
@@ -139,7 +244,9 @@ def parse_note(path, text, line_offset=0):
             used.add(block)
             paragraph_start = before
             while paragraph_start > 0 and lines[paragraph_start - 1].strip():
-                if FIELD.fullmatch(lines[paragraph_start - 1]) or re.match(r"^\s*#", lines[paragraph_start - 1]):
+                if (FIELD.fullmatch(lines[paragraph_start - 1]) or
+                        lines[paragraph_start - 1].startswith("<!-- record boundary") or
+                        re.match(r"^\s*#", lines[paragraph_start - 1])):
                     break
                 paragraph_start -= 1
             # Inline code can name an actual parameter or operator. Preserve it
@@ -161,7 +268,7 @@ def parse_note(path, text, line_offset=0):
             if unknown:
                 raise ValueError(f"注册单元未知字段：{', '.join(sorted(unknown))}；普通解释另写段落")
             record = {"key": f"{path}#^{block}", "id": block, "path": path,
-                      "line": paragraph_start + 1 + line_offset, "kind": object_type, "text": prose,
+                      "line": locations[paragraph_start] + 1 + line_offset, "kind": object_type, "text": prose,
                       "fields": dict(fields), "evidence": [], "dependencies": []}
             if object_type == "claim":
                 record["claim_type"] = _one(fields, "判断类型")
@@ -225,12 +332,86 @@ def parse_note(path, text, line_offset=0):
                 record["evidence"] = [_evidence(value) for value in fields.get("证据", [])]
                 if delta_type != "不变" and not record["evidence"]:
                     raise ValueError("实际知识更新须有固定来源依据")
-            record["fingerprint"] = digest(json.dumps({"kind": object_type, "text": prose, "fields": dict(fields)},
-                                                        ensure_ascii=False, sort_keys=True))
+            # Rendering and slot order are not scientific changes. Fingerprint
+            # explicit semantic values, excluding physical/display metadata.
+            record["fingerprint"] = _scientific_fingerprint(record)
             records.append(record)
         except ValueError as exc:
-            errors.append({"path": path, "line": index + 1 + line_offset, "message": f"{label} {exc}"})
+            errors.append({"path": path, "line": locations[index] + 1 + line_offset, "message": f"{label} {exc}"})
     return records, errors
+
+
+def fold_registrations(text, path="draft.md"):
+    """Format valid legacy registrations without changing scientific prose.
+
+    No guessing, whole-vault migration or hidden second semantic store. Verify
+    full normalized records before returning the formatted Markdown.
+    """
+    before, errors = parse_note(path, text)
+    if errors:
+        raise ValueError(f"先处理注册错误再排版：{errors}")
+    visible, raw = visible_markdown(text).splitlines(), text.splitlines()
+    edits, index = [], 0
+    titles = {value: key for key, value in RECORD_TYPES.items() if key != "来源与判断记录"}
+    while index < len(visible):
+        start = FIELD.fullmatch(visible[index])
+        if not start or start[1] != "研究对象":
+            index += 1
+            continue
+        begin, fields, end = index, [], index
+        while index < len(visible):
+            if not visible[index].strip():
+                index += 1
+                continue
+            field = FIELD.fullmatch(raw[index])
+            if not field or (index > begin and field[1] == "研究对象"):
+                break
+            fields.append((field[1], field[2])); end = index + 1; index += 1
+        object_type = fields[0][1]
+        rows = [f"> [!note]- {titles[object_type]}"]
+        mapping = defaultdict(list)
+        for name, value in fields[1:]:
+            mapping[name].append(value)
+        consumed = set()
+        if object_type == "命题":
+            verdict, slots = _slots(_one(mapping, "裁决"))
+            rows.extend([f"> **判断**：{_one(mapping, '判断类型')}｜提出者={_one(mapping, '提出者')}｜裁决={verdict}",
+                         f"> **范围**：{_one(mapping, '范围')}", f"> **理由**：{slots['理由']}"])
+            consumed = {"判断类型", "提出者", "范围", "裁决"}
+        sources = [_slots(value)[1] for value in mapping.get("证据", [])]
+        defaults = {key: sources[0][key] for key in ("来源", "版本", "核验", "哈希")
+                    if sources and key in sources[0]}
+        if sources and not all(all(slots.get(key) == defaults.get(key)
+                                   for key in ("来源", "版本", "核验", "哈希")) for slots in sources):
+            defaults = {}
+        if defaults:
+            rows.extend([">", "> **来源**：" + "｜".join([defaults["来源"]] +
+                         [f"{key}={value}" for key, value in defaults.items() if key != "来源"])])
+        for name, value in fields[1:]:
+            if name in consumed:
+                continue
+            if name == "证据":
+                kind, slots = _slots(value)
+                value = "｜".join(f"{key}={item}" for key, item in slots.items() if key not in defaults)
+                name = kind
+            rows.append(f"> **{name}**：{value}")
+        # Empty quoted lines make each field a paragraph in reading mode;
+        # relying on soft line breaks would join the expanded fields again.
+        spaced = [rows[0]]
+        for row in rows[1:]:
+            if row == ">":
+                continue
+            spaced.extend([">", row])
+        edits.append((begin, end, spaced))
+    for begin, end, rows in reversed(edits):
+        raw[begin:end] = rows
+    formatted = "\n".join(raw) + ("\n" if text.endswith("\n") else "")
+    after, errors = parse_note(path, formatted)
+    def semantic(records):
+        return [{key: value for key, value in record.items() if key not in {"line", "fields"}} for record in records]
+    if errors or semantic(before) != semantic(after):
+        raise ValueError(f"排版改变注册语义或定位失败，拒绝输出：{errors}")
+    return formatted, len(edits)
 
 
 def _source_catalog(root):
@@ -377,7 +558,8 @@ def changed_objects(previous, current):
     new = current.get("objects", {})
     return {key: {"before": old.get(key, {}).get("fingerprint"), "after": new.get(key, {}).get("fingerprint")}
             for key in old.keys() | new.keys()
-            if old.get(key, {}).get("fingerprint") != new.get(key, {}).get("fingerprint")}
+            if key not in old or key not in new or
+            _scientific_fingerprint(old[key]) != _scientific_fingerprint(new[key])}
 
 
 def affected_candidates(index, changed, sources=()):
@@ -445,9 +627,12 @@ def build(root):
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="research.py derive", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("build", "status", "impact", "resolve"):
+    for name in ("build", "status", "impact", "resolve", "format"):
         command = sub.add_parser(name)
         command.add_argument("--root", type=Path, default=default_root())
+        if name == "format":
+            command.add_argument("--input", required=True, help="已核 Markdown 的库根相对路径")
+            command.add_argument("--output", required=True, help="新草稿路径；仅限 .research/drafts 或 work")
         if name == "impact":
             command.add_argument("--since", help="旧派生索引的库根相对路径；比较实际对象变化")
             command.add_argument("--source", action="append", default=[], help="出现新版本的固定来源 ID；只标需复核")
@@ -460,7 +645,25 @@ def main(argv=None):
             command.add_argument("--evidence", action="append", default=[])
     args = parser.parse_args(argv)
     root = args.root.resolve()
-    if args.command == "build":
+    if args.command == "format":
+        source, target = inside(root, args.input), inside(root, args.output)
+        relative = target.relative_to(root)
+        if relative.parts[:2] not in {(".research", "drafts"), (".research", "work")} or target.suffix != ".md":
+            raise ValueError("排版仅输出 .research/drafts 或 .research/work 中的 Markdown；正式页走审阅提交")
+        if source == target:
+            raise ValueError("排版输出须为新草稿，不覆盖输入")
+        original = source.read_text(encoding="utf-8")
+        formatted, count = fold_registrations(original, str(source.relative_to(root)))
+        with locked(root, f"semantic-format:{relative}"):
+            if source.read_text(encoding="utf-8") != original:
+                raise ValueError("输入在排版时改变，停止输出")
+            if target.exists() and target.read_text(encoding="utf-8") != formatted:
+                raise ValueError("输出已有不同内容，保留它并选择新草稿路径")
+            atomic_text(target, formatted)
+        result = {"output": str(relative), "sha256": digest(formatted.encode("utf-8")),
+                  "formatted_records": count, "semantic_equivalence": "explicit_records_unchanged",
+                  "limitation": "仅排版；仍需检查重要证据/限制是否直接可见，不能证明科学结论"}
+    elif args.command == "build":
         result = build(root)
     elif args.command == "status":
         target = inside(root, INDEX_PATH)
