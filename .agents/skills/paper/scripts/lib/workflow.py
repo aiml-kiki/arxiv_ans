@@ -792,8 +792,8 @@ def adopt_owner(root: Path, state: dict, ident: str, event: dict) -> dict:
 
 
 def bound_owner(unit: dict, agent_id: str, require_active: bool = True) -> None:
-    if autonomy_mode(unit) != "unit" or not unit["owner"] or unit["owner"]["mode"] != "agent":
-        raise ValueError("step仅用于有真实agent owner的unit自主单元")
+    if autonomy_mode(unit) != "unit" or not unit["owner"] or unit["owner"]["mode"] not in {"agent", "main"}:
+        raise ValueError("step仅用于有真实绑定执行者的unit自主单元；主会话降级须先登记实际main dispatch")
     if text(agent_id, "执行owner ID") != unit["owner"]["agent_id"]:
         raise ValueError("内部检查点必须绑定本单元真实owner，不能换人或冒充宿主followup")
     if require_active and not unit.get("owner_active", False):
