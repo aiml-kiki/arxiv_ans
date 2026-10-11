@@ -201,6 +201,10 @@ def stage(root, changes, proposal, run=None, summary=None, origins=None):
                 meta = validate_note_frontmatter(content, rel)
                 if meta.get('kind') not in {'paper', 'knowledge', 'comparison', 'topic'}:
                     raise ValueError('新版候选给出明确kind；旧正式页无需批量改写')
+                from .semantics import body_presentation_issues
+                style = body_presentation_issues(content)
+                if style:
+                    raise ValueError('候选正文展示需调整: ' + '; '.join(style))
             entries.append({'path': str(target.relative_to(root)),
                             'before': digest(target.read_bytes()) if target.exists() else None,
                             'content': content})

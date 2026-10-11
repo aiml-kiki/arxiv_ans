@@ -38,6 +38,101 @@ ANCHOR = re.compile(r"(?<!\S)\^([A-Za-z0-9-]+)\s*$")
 WIKI = re.compile(r"\[\[([^\]\n]+)\]\]")
 PLACEHOLDER = re.compile(r"^(?:<.*>|待填写|TODO|TBD|\.\.\.|…)$", re.I)
 INDEX_PATH = ".research/index/semantic.json"
+BODY_OBJECT = re.compile(r'^<!-- paper-object (.+) -->$')
+TEXT_FIELDS = {"范围", "假设", "区分观察", "竞争解释", "进展", "旧判断", "新判断", "处理决定"}
+
+
+def _body_bindings(text):
+    """Resolve annotations only against unique, visible ordinary paragraphs."""
+    raw, visible = text.splitlines(), visible_markdown(text).splitlines()
+    blocks = {}
+    for index, line in enumerate(visible):
+        match = ANCHOR.search(line)
+        if not match:
+            continue
+        if match[1] in blocks:
+            raise ValueError(f"正文定位存在重复块 ID：{match[1]}")
+        start = index
+        while start and visible[start - 1].strip():
+            start -= 1
+        paragraph = "\n".join(raw[start:index] + [raw[index][:match.start()].rstrip()])
+        if not paragraph.strip() or re.match(r'^\s*(?:#{1,6}\s|[-*+]\s|\d+[.)]\s|>|\||```|~~~)', paragraph):
+            continue
+        blocks[match[1]] = paragraph
+    return blocks
+
+
+def _annotation_fields(data, blocks):
+    if not isinstance(data, dict) or set(data) - {"kind", "fields", "source", "evidence"}:
+        raise ValueError("正文绑定只接受 kind/fields/source/evidence")
+    kind = data.get("kind")
+    if kind not in OBJECT_TYPES or not isinstance(data.get("fields"), dict):
+        raise ValueError("正文绑定须给合法 kind 与 fields")
+
+    def prose(pointer):
+        if not isinstance(pointer, dict) or set(pointer) != {"block"} or pointer["block"] not in blocks:
+            raise ValueError("解释字段必须指向本页唯一可见普通段落：{\"block\":\"稳定ID\"}")
+        return " ".join(blocks[pointer["block"]].splitlines())
+
+    rows = [("研究对象", kind)]
+    for name, value in data["fields"].items():
+        if name == "研究对象" or name not in ALLOWED_FIELDS[OBJECT_TYPES[kind]] - {"证据"}:
+            raise ValueError(f"正文绑定未知字段：{name}")
+        values = value if isinstance(value, list) else [value]
+        for item in values:
+            if name in TEXT_FIELDS:
+                item = prose(item)
+            elif name == "裁决":
+                if not isinstance(item, dict) or set(item) != {"status", "reason"}:
+                    raise ValueError("裁决须给 status 与指向正文的 reason")
+                item = str(item["status"]) + "｜理由=" + prose(item["reason"])
+            elif name in {"依赖", "源", "目标", "参与命题", "受影响"}:
+                if not isinstance(item, str) or not re.fullmatch(r'(?:论文|知识|专题)/[^\n\[\]]+#\^[A-Za-z0-9-]+', item):
+                    raise ValueError("关系定位须为正式路径#^稳定块ID；阅读解释留在正文")
+                item = "[[" + item + "]]"
+            elif not isinstance(item, str):
+                raise ValueError(f"分类字段必须为字符串：{name}")
+            rows.append((name, item))
+    defaults = data.get("source", {})
+    if not isinstance(defaults, dict) or set(defaults) - {"id", "version", "verification", "sha256"}:
+        raise ValueError("source 仅接受 id/version/verification/sha256；不同源独立覆盖")
+    evidence = data.get("evidence", [])
+    if not isinstance(evidence, list):
+        raise ValueError("evidence 必须为列表")
+    for entry in evidence:
+        if not isinstance(entry, dict) or set(entry) - {"relation", "block", "link", "location", "source"}:
+            raise ValueError("证据只保存关系、正文定位、链接序号、原文位置及必要来源覆盖")
+        body = prose({"block": entry.get("block")})
+        links = re.findall(r'\[\[[^\]\n]+\]\]|(?<!!)\[[^\]\n]*\]\(https://[^\s)]+\)', body)
+        number = entry.get("link", 0)
+        if type(number) is not int or number < 0 or number >= len(links):
+            raise ValueError("证据链接序号须指向该可见正文段落的真实 Wiki/HTTPS 链接（从0起）")
+        override = entry.get("source", {})
+        if not isinstance(override, dict) or set(override) - {"id", "version", "verification", "sha256"}:
+            raise ValueError("证据来源覆盖存在未知字段")
+        if any(key in override and override[key] != defaults.get(key) for key in ("id", "version")):
+            source = override  # Never inherit another source's verification or hash.
+        else:
+            source = {**defaults, **override}
+        slots = {"来源": source.get("id", ""), "版本": source.get("version", ""),
+                 "核验": source.get("verification", ""), "位置": entry.get("location", ""),
+                 "链接": links[number], "说明": body}
+        if source.get("sha256"):
+            slots["哈希"] = source["sha256"]
+        value = "｜".join([str(entry.get("relation", ""))] + [f"{key}={value}" for key, value in slots.items()])
+        _evidence(value)
+        rows.append(("证据", value))
+    return rows
+
+
+def body_presentation_issues(text):
+    """New candidates must explain judgments in prose; histories stay readable."""
+    issues = []
+    for number, line in enumerate(visible_markdown(text).splitlines(), 1):
+        field = FIELD.fullmatch(line)
+        if RECORD_CALLOUT.fullmatch(line) or (field and field[1] == "研究对象"):
+            issues.append(f"第 {number} 行：新候选不输出独立判断/关系/问题/更新记录；先融入正文，再用 paper-object 绑定")
+    return issues
 
 
 def _filled(value):
@@ -123,16 +218,33 @@ def _evidence(value):
 
 
 def _registration_view(text):
-    """Expand only explicit record callouts, preserving physical line locators.
+    """Resolve body bindings and legacy records, retaining physical line locators.
 
-    Ordinary quotes, fenced examples and comments never register an object.
+    Ordinary quotes, fenced examples and unmarked comments never register an object.
     The scientific paragraph and its stable anchor remain outside the callout.
     """
     visible = visible_markdown(text).splitlines()
     raw = text.splitlines()
     lines, original, locations, errors = [], [], [], []
+    # Reveal only the explicit marker for fence detection; ordinary comments
+    # remain invisible and can never accidentally become research objects.
+    probe = visible_markdown(re.sub(r'^<!-- paper-object .+ -->$', 'PAPER_OBJECT_MARKER', text, flags=re.M)).splitlines()
+    blocks = None
     index = 0
     while index < len(visible):
+        annotation = BODY_OBJECT.fullmatch(raw[index])
+        if annotation and probe[index] == 'PAPER_OBJECT_MARKER':
+            try:
+                if blocks is None:
+                    blocks = _body_bindings(text)
+                for name, value in _annotation_fields(json.loads(annotation[1]), blocks):
+                    field = f"**{name}：** {value}"
+                    lines.append(field); original.append(field); locations.append(index)
+                lines.append("<!-- record boundary -->"); original.append(""); locations.append(index)
+            except (ValueError, TypeError, KeyError) as exc:
+                errors.append({"line": index + 1, "message": str(exc)})
+            index += 1
+            continue
         header = RECORD_CALLOUT.fullmatch(visible[index])
         if not header:
             lines.append(visible[index]); original.append(raw[index]); locations.append(index)
@@ -341,76 +453,64 @@ def parse_note(path, text, line_offset=0):
     return records, errors
 
 
-def fold_registrations(text, path="draft.md"):
-    """Format valid legacy registrations without changing scientific prose.
+def bind_registrations(text, bindings=None, path="draft.md"):
+    """Remove old cards only with explicit, reviewed body bindings.
 
-    No guessing, whole-vault migration or hidden second semantic store. Verify
-    full normalized records before returning the formatted Markdown.
+    No semantic deduplication by heuristics. Categories and fixed evidence
+    identities are checked; changed body explanations require human review.
     """
     before, errors = parse_note(path, text)
     if errors:
-        raise ValueError(f"先处理注册错误再排版：{errors}")
-    visible, raw = visible_markdown(text).splitlines(), text.splitlines()
+        raise ValueError(f"先处理登记错误：{errors}")
+    raw, visible = text.splitlines(), visible_markdown(text).splitlines()
     edits, index = [], 0
-    titles = {value: key for key, value in RECORD_TYPES.items() if key != "来源与判断记录"}
-    while index < len(visible):
-        start = FIELD.fullmatch(visible[index])
-        if not start or start[1] != "研究对象":
+    while index < len(raw):
+        header = RECORD_CALLOUT.fullmatch(visible[index])
+        field = FIELD.fullmatch(visible[index])
+        if not header and not (field and field[1] == "研究对象"):
             index += 1
             continue
-        begin, fields, end = index, [], index
-        while index < len(visible):
-            if not visible[index].strip():
+        begin = index
+        previous = index - 1
+        while previous >= 0 and not visible[previous].strip():
+            previous -= 1
+        anchor = ANCHOR.search(visible[previous]) if previous >= 0 else None
+        if not anchor or not bindings or anchor[1] not in bindings:
+            raise ValueError("旧登记迁移必须提供每项 --bindings 正文定位；先把仅在记录中的重要信息补入正文")
+        if header:
+            index += 1
+            while index < len(raw) and re.match(r"^>($|\s)", visible[index]):
                 index += 1
-                continue
-            field = FIELD.fullmatch(raw[index])
-            if not field or (index > begin and field[1] == "研究对象"):
-                break
-            fields.append((field[1], field[2])); end = index + 1; index += 1
-        object_type = fields[0][1]
-        rows = [f"> [!note]- {titles[object_type]}"]
-        mapping = defaultdict(list)
-        for name, value in fields[1:]:
-            mapping[name].append(value)
-        consumed = set()
-        if object_type == "命题":
-            verdict, slots = _slots(_one(mapping, "裁决"))
-            rows.extend([f"> **判断**：{_one(mapping, '判断类型')}｜提出者={_one(mapping, '提出者')}｜裁决={verdict}",
-                         f"> **范围**：{_one(mapping, '范围')}", f"> **理由**：{slots['理由']}"])
-            consumed = {"判断类型", "提出者", "范围", "裁决"}
-        sources = [_slots(value)[1] for value in mapping.get("证据", [])]
-        defaults = {key: sources[0][key] for key in ("来源", "版本", "核验", "哈希")
-                    if sources and key in sources[0]}
-        if sources and not all(all(slots.get(key) == defaults.get(key)
-                                   for key in ("来源", "版本", "核验", "哈希")) for slots in sources):
-            defaults = {}
-        if defaults:
-            rows.extend([">", "> **来源**：" + "｜".join([defaults["来源"]] +
-                         [f"{key}={value}" for key, value in defaults.items() if key != "来源"])])
-        for name, value in fields[1:]:
-            if name in consumed:
-                continue
-            if name == "证据":
-                kind, slots = _slots(value)
-                value = "｜".join(f"{key}={item}" for key, item in slots.items() if key not in defaults)
-                name = kind
-            rows.append(f"> **{name}**：{value}")
-        # Empty quoted lines make each field a paragraph in reading mode;
-        # relying on soft line breaks would join the expanded fields again.
-        spaced = [rows[0]]
-        for row in rows[1:]:
-            if row == ">":
-                continue
-            spaced.extend([">", row])
-        edits.append((begin, end, spaced))
+            end = index
+        else:
+            end = index
+            while index < len(raw):
+                if not visible[index].strip():
+                    index += 1
+                    continue
+                field = FIELD.fullmatch(visible[index])
+                if not field or (index > begin and field[1] == "研究对象"):
+                    break
+                index += 1; end = index
+        annotation = "<!-- paper-object " + json.dumps(bindings[anchor[1]], ensure_ascii=False, separators=(",", ":")) + " -->"
+        edits.append((begin, end, [annotation]))
     for begin, end, rows in reversed(edits):
         raw[begin:end] = rows
     formatted = "\n".join(raw) + ("\n" if text.endswith("\n") else "")
     after, errors = parse_note(path, formatted)
-    def semantic(records):
-        return [{key: value for key, value in record.items() if key not in {"line", "fields"}} for record in records]
-    if errors or semantic(before) != semantic(after):
-        raise ValueError(f"排版改变注册语义或定位失败，拒绝输出：{errors}")
+    if errors or {r["id"] for r in before} != {r["id"] for r in after}:
+        raise ValueError(f"正文绑定丢失登记或定位失败：{errors}")
+    identity_keys = {"kind", "claim_type", "proponent", "verdict", "source", "target", "relation", "attribution",
+                     "status", "delta_type", "dependencies", "participants", "affected"}
+    def identity(record):
+        value = {key: record.get(key) for key in identity_keys}
+        value["evidence"] = [{key: item.get(key) for key in
+                              ("relation", "source_id", "version", "location", "verification", "requested_sha256")}
+                             for item in record["evidence"]]
+        return value
+    old = {r["id"]: identity(r) for r in before}
+    if old != {r["id"]: identity(r) for r in after}:
+        raise ValueError("迁移改变了类别、裁决、关系或固定证据身份；请另走实质科学修订")
     return formatted, len(edits)
 
 
@@ -633,6 +733,7 @@ def main(argv=None):
         if name == "format":
             command.add_argument("--input", required=True, help="已核 Markdown 的库根相对路径")
             command.add_argument("--output", required=True, help="新草稿路径；仅限 .research/drafts 或 work")
+            command.add_argument("--bindings", help="旧登记块ID→正文绑定JSON；旧记录迁移必需")
         if name == "impact":
             command.add_argument("--since", help="旧派生索引的库根相对路径；比较实际对象变化")
             command.add_argument("--source", action="append", default=[], help="出现新版本的固定来源 ID；只标需复核")
@@ -653,7 +754,10 @@ def main(argv=None):
         if source == target:
             raise ValueError("排版输出须为新草稿，不覆盖输入")
         original = source.read_text(encoding="utf-8")
-        formatted, count = fold_registrations(original, str(source.relative_to(root)))
+        bindings = read_json(inside(root, args.bindings)) if args.bindings else None
+        if bindings is not None and not isinstance(bindings, dict):
+            raise ValueError("bindings须为 块ID→正文绑定 的映射")
+        formatted, count = bind_registrations(original, bindings, str(source.relative_to(root)))
         with locked(root, f"semantic-format:{relative}"):
             if source.read_text(encoding="utf-8") != original:
                 raise ValueError("输入在排版时改变，停止输出")
@@ -661,8 +765,9 @@ def main(argv=None):
                 raise ValueError("输出已有不同内容，保留它并选择新草稿路径")
             atomic_text(target, formatted)
         result = {"output": str(relative), "sha256": digest(formatted.encode("utf-8")),
-                  "formatted_records": count, "semantic_equivalence": "explicit_records_unchanged",
-                  "limitation": "仅排版；仍需检查重要证据/限制是否直接可见，不能证明科学结论"}
+                  "formatted_records": count, "identity_preserved": True,
+                  "review_required": bool(count),
+                  "limitation": "类别、裁决、关系及固定证据身份保持；正文说明重新绑定须实际审阅，不宣称语义等价"}
     elif args.command == "build":
         result = build(root)
     elif args.command == "status":

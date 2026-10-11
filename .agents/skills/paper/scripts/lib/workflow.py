@@ -1061,6 +1061,12 @@ def final_report(root: Path, state: dict, ident: str, report: dict | None = None
         result["report_status"] = "owner_summary_not_recorded"
     if finding is not None:
         validate_finding(unit, finding, final=True)
+        if finding.get("accepted_binding_sha256") is not None and finding["accepted_binding_sha256"] != binding:
+            raise ValueError("最终复核声明的接受绑定已过期；核当前候选/接受轮次后更新真实审查记录")
+        if "candidate_path" in finding or "candidate_sha256" in finding:
+            if not any(item["draft"] == finding.get("candidate_path") and
+                       item["sha256"] == finding.get("candidate_sha256") for item in mapping):
+                raise ValueError("最终复核声明的候选路径/哈希不匹配当前接受产物")
         if finding.get("decision") not in {"accept", "revise"}:
             raise ValueError("最终finding须有decision:accept|revise；revise之后定向reopen")
         if finding["decision"] == "revise" and (not isinstance(finding.get("required_changes"), list) or not finding["required_changes"]):
@@ -1261,7 +1267,7 @@ def submit(root: Path, state: dict, ident: str, result: dict) -> dict:
                         for candidate in (old.get("accepted") or old.get("pending") or {}).get("candidates", [])):
                     raise ValueError("同一目标已有其他单元候选；须由唯一写者整合")
             from .notes import validate_note_frontmatter, block_anchors, table_render_issues
-            from .semantics import parse_note
+            from .semantics import parse_note, body_presentation_issues
             content = path.read_text(encoding="utf-8")
             meta = validate_note_frontmatter(content, target)
             expected_kinds = ({"paper"} if target.startswith("论文/") else
@@ -1277,6 +1283,7 @@ def submit(root: Path, state: dict, ident: str, result: dict) -> dict:
             if len(anchors) != len(set(anchors)):
                 layout_errors.append("块ID重复")
             layout_errors += table_render_issues(body)
+            layout_errors += body_presentation_issues(body)
             if layout_errors or contract_errors:
                 raise ValueError("候选本地字段/排版契约未通过（不等于科学核验）: " + json.dumps(
                     {"target": target, "layout": layout_errors, "fields": contract_errors}, ensure_ascii=False))
