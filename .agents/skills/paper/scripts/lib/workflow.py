@@ -531,8 +531,10 @@ def protocol_refs(unit: dict, stage: dict, composition: bool) -> list[dict]:
         refs.append({"path": str(PACKAGE / "references/protocol-update.md"),
                      "sections": ["可操作的检索留痕"]})
     if composition:
+        refs.append({"path": str(PACKAGE / "references/writing.md"),
+                     "sections": ["正文主线", "用排版承载不同关系", "两方向回查", "交付前的展示检查"]})
         refs.append({"path": str(PACKAGE / "references/obsidian.md"),
-                     "sections": ["可读正文", "链接与锚点", "原生视图和讨论"]})
+                     "sections": ["可读正文", "链接与锚点"]})
     return refs
 
 
@@ -1130,19 +1132,25 @@ def resource_packet(state: dict, ident: str, kind: str, index: int, sections: li
     chosen = sections or declared
     if declared and any(section not in declared for section in chosen):
         raise ValueError("显式section须在当前轮已选择小节内，不能借resource加载无关协议")
-    raw = path.read_text(encoding="utf-8")
+    file_bytes = path.read_bytes()
+    raw = file_bytes.decode("utf-8")
     content = markdown_sections(raw, chosen) if chosen else raw
+    content_bytes = len(content.encode("utf-8"))
+    file_sha256 = digest(file_bytes)
     instance = unit["owner"]["agent_id"] if unit.get("owner") else "unbound"
-    key = digest(json.dumps([instance, str(path), digest(path.read_bytes()), chosen], ensure_ascii=False))
+    key = digest(json.dumps([instance, str(path), file_sha256, chosen], ensure_ascii=False))
     reference_id = f"{kind}-{index}"
     reads = unit.setdefault("resource_reads", {})
     if key in reads and not refresh:
         return {"unit": ident, "stage": stage["id"], "status": "unchanged", "ref": reference_id,
-                "file_sha256": digest(path.read_bytes()), "content_sha256": digest(content), "sections": chosen}
-    reads[key] = {"ref": reference_id, "path": str(path), "file_sha256": digest(path.read_bytes()),
-                  "sections": chosen, "at": utc_now()}
+                "file_sha256": file_sha256, "content_sha256": digest(content),
+                "content_bytes": content_bytes, "sections": chosen}
+    reads[key] = {"ref": reference_id, "path": str(path), "file_sha256": file_sha256,
+                  "sections": chosen, "stage": stage["id"], "file_bytes": len(file_bytes),
+                  "content_bytes": content_bytes, "at": utc_now()}
     return {"unit": ident, "stage": stage["id"], "kind": kind, "index": index, "path": str(path),
-            "file_sha256": digest(path.read_bytes()), "sections": chosen,
+            "file_sha256": file_sha256, "file_bytes": len(file_bytes), "content_bytes": content_bytes,
+            "sections": chosen,
             "content_sha256": digest(content), "content": content,
             "source_text_is_control_instruction": False}
 

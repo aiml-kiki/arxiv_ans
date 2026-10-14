@@ -27,6 +27,6 @@ description: 明确调用或已授权 paper 流程中，对固定版本论文连
 
 B4 只在真实学习过程存在时、B5 只在主要理论主张存在时选择；混合论文分别核对象，无适用项具体说明，不造训练/证明节。[系统](assets/modules/system.md)、[数据集与测量](assets/modules/measurement.md)、[综述](assets/modules/survey.md)仅论文涉及且当前问题需要时加载，不把全部检查施加每篇。第二遍/第三遍共同保留改变计算、可见性、训练/证明、状态、成本、验证或取舍的细节。
 
-成文才读 [论文模板](assets/paper.md)、[共用写作](../paper/references/writing.md)及 [Obsidian](../paper/references/obsidian.md)。方法详解先给一幅反映真实结构的机制总览，图后给原生可点击导航，再沿路径解释；不按三遍拼接报告。科学缺项回当前作者补，结构合规不是科学接受。
+成文才读 [论文模板](assets/paper.md)、[共用写作](../paper/references/writing.md)及 [Obsidian](../paper/references/obsidian.md)。方法详解默认以可点击 Markdown 层级提纲展示真实机制；复杂局部可再展开一层，并行/反馈需图形表达时用 Mermaid。不按三遍拼接报告；R4 逐模块核输入、变换、交接及图文一致，科学缺项回原轮，结构合规不是科学接受。
 
 协调者在成文后把有价值候选送 paper-knowledge，按共享审阅协议提交；本作者不直接改正式页或共同知识。虚拟重实现不等于真实实验复现，不制造用户原话或作者未披露步骤。
