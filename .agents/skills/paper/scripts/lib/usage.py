@@ -40,6 +40,7 @@ def normalize(record):
     if scope not in SCOPES:
         raise ValueError('measurement_scope 须为 response/cumulative/tree_total')
     row = {key: record.get(key) for key in ('run', 'unit', 'stage', 'thread_id', 'parent_thread_id',
+        'turn_id', 'root_turn_id',
         'response_id', 'call_id', 'requested_model', 'actual_model', 'requested_effort', 'actual_effort',
         'timestamp', 'elapsed_ms', 'meter_id', 'coverage_start', 'coverage_end')}
     row.update(measurement_scope=scope, cumulative=bool(record.get('cumulative', scope == 'cumulative')),
@@ -67,7 +68,7 @@ def normalize(record):
     return row
 
 
-def read_records(paths):
+def read_records(paths, selected_turn_ids=None):
     """Read only selected local files; Codex context denotes requested routing."""
     rows, diagnostics = [], []
     for filename in paths:
@@ -83,6 +84,9 @@ def read_records(paths):
             continue
         context = {}
         session = {}
+        legacy_rows, receipt_rows = [], []
+        turn_receipts = defaultdict(dict)
+        turn_totals = {}
         with path.open(encoding='utf-8') as stream:
             for line_number, line in enumerate(stream, 1):
                 if not line.strip():
@@ -101,8 +105,30 @@ def read_records(paths):
                 if kind == 'session_meta':
                     session = {'thread_id': payload.get('id'), 'parent_thread_id': payload.get('parent_thread_id')}
                 elif kind == 'turn_context':
-                    context = {'requested_model': payload.get('model'),
+                    context = {'turn_id': payload.get('turn_id'),
+                               'root_turn_id': payload.get('root_turn_id'),
+                               'requested_model': payload.get('model'),
                                'requested_effort': payload.get('effort', payload.get('reasoning_effort'))}
+                elif kind == 'token_usage_record':
+                    usage = payload.get('usage')
+                    if not isinstance(usage, dict):
+                        diagnostics.append({'kind': 'receipt_usage_unavailable', 'line': line_number})
+                        continue
+                    if not payload.get('thread_id') or not payload.get('turn_id') or not payload.get('response_id'):
+                        diagnostics.append({'kind': 'receipt_identity_unavailable', 'line': line_number})
+                    if (usage.get('total_tokens') is not None and
+                            usage['total_tokens'] != usage.get('input_tokens', 0) + usage.get('output_tokens', 0)):
+                        diagnostics.append({'kind': 'receipt_total_mismatch', 'line': line_number})
+                    row = normalize({**session, **context, 'timestamp': event.get('timestamp'),
+                        'thread_id': payload.get('thread_id') or session.get('thread_id'),
+                        'turn_id': payload.get('turn_id'), 'root_turn_id': payload.get('root_turn_id'),
+                        'response_id': payload.get('response_id'), 'usage': usage})
+                    receipt_rows.append(row)
+                    turn_id = row['turn_id']
+                    if turn_id and row['response_id']:
+                        turn_receipts[turn_id][row['response_id']] = row
+                    if turn_id and isinstance(payload.get('turn_token_usage'), dict):
+                        turn_totals[turn_id] = payload['turn_token_usage']
                 elif kind == 'event_msg' and payload.get('type') == 'token_count':
                     info = payload.get('info') or {}
                     total = info.get('total_token_usage')
@@ -110,7 +136,7 @@ def read_records(paths):
                     if not total and not last:
                         continue
                     # Codex snapshots are per thread; token_count is not a provider response receipt.
-                    rows.append(normalize({**session, **context, 'timestamp': event.get('timestamp'),
+                    legacy_rows.append(normalize({**session, **context, 'timestamp': event.get('timestamp'),
                         'measurement_id': 'codex-observation-' + digest(json.dumps(event, sort_keys=True)),
                         'meter_id': 'codex-thread-tokens',
                         'measurement_scope': 'cumulative' if total else 'response',
@@ -121,10 +147,31 @@ def read_records(paths):
                 elif kind == 'response' or (kind == 'response_item' and payload.get('usage')):
                     response = payload.get('response', payload)
                     if isinstance(response, dict) and isinstance(response.get('usage'), dict):
-                        rows.append(normalize({**session, **context, 'timestamp': event.get('timestamp'),
+                        legacy_rows.append(normalize({**session, **context, 'timestamp': event.get('timestamp'),
                             'response_id': response.get('id'), 'actual_model': response.get('model'),
                             'actual_effort': (response.get('reasoning') or {}).get('effort'),
                             'usage': response['usage']}))
+        # Recent Codex files contain exact response receipts alongside cumulative
+        # token_count snapshots. Counting both would double bill the same calls.
+        if receipt_rows:
+            for turn_id, receipts in turn_receipts.items():
+                cumulative = turn_totals.get(turn_id)
+                if cumulative is None:
+                    diagnostics.append({'kind': 'receipt_turn_total_unavailable', 'turn_id': turn_id})
+                    continue
+                for key in ('input_tokens', 'cached_input_tokens', 'output_tokens', 'reasoning_output_tokens'):
+                    if key not in cumulative and key not in next(iter(receipts.values()))['usage']:
+                        continue
+                    normalized_key = 'reasoning_tokens' if key == 'reasoning_output_tokens' else key
+                    if cumulative.get(key) != sum(row['usage'][normalized_key] or 0 for row in receipts.values()):
+                        diagnostics.append({'kind': 'receipt_turn_cumulative_mismatch',
+                                            'turn_id': turn_id, 'metric': key})
+            chosen = receipt_rows
+        else:
+            chosen = legacy_rows
+        if selected_turn_ids is not None:
+            chosen = [row for row in chosen if row['turn_id'] in selected_turn_ids.get(row['thread_id'], [])]
+        rows.extend(chosen)
     return rows, diagnostics
 
 
@@ -329,7 +376,13 @@ def add_parser(subparsers):
 def run(root, args):
     root = Path(root).resolve()
     manifest = read_json(inside(root, args.scope_manifest)) if args.scope_manifest else {}
-    records, diagnostics = read_records(args.input)
+    selected = manifest.get('selected_turn_ids')
+    if selected is not None and (not isinstance(selected, dict) or
+            any(not isinstance(thread, str) or not isinstance(turns, list) or
+                not turns or any(not isinstance(turn, str) for turn in turns)
+                for thread, turns in selected.items())):
+        raise ValueError('selected_turn_ids 须为线程ID到非空 turn ID 数组的映射')
+    records, diagnostics = read_records(args.input, selected_turn_ids=selected)
     run_metadata = attach_run_metadata(root, args.run, records) if getattr(args, 'run', None) else None
     if run_metadata and manifest.get('full_tree'):
         known = set(run_metadata['registered_actual_actors'])
@@ -337,7 +390,12 @@ def run(root, args):
             known.add(run_metadata['root_agent_id'])
         else:
             diagnostics.append({'kind': 'root_actor_unavailable_for_full_tree'})
-        omitted = sorted(known - set(manifest.get('expected_threads') or []))
+        aliases = manifest.get('actor_thread_ids') or {}
+        if not isinstance(aliases, dict) or any(not isinstance(key, str) or not isinstance(value, str)
+                for key, value in aliases.items()):
+            raise ValueError('actor_thread_ids 须为代理ID到真实线程ID的映射')
+        omitted = sorted(actor for actor in known if aliases.get(actor, actor)
+                         not in set(manifest.get('expected_threads') or []))
         if omitted:
             diagnostics.append({'kind': 'registered_tree_actor_omitted', 'actors': omitted})
     report = aggregate(records, expected_threads=manifest.get('expected_threads'),

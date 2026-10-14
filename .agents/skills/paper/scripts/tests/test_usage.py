@@ -100,6 +100,52 @@ class Usage(unittest.TestCase):
         self.assertNotIn('PRIVATE TEXT', json.dumps(report))
         self.assertNotIn(str(path), json.dumps(report))
 
+    def test_codex_response_receipts_replace_snapshots_and_select_one_turn(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / 'session.jsonl'
+            events = [
+                {'type': 'session_meta', 'payload': {'id': 'root-thread'}},
+                {'type': 'turn_context', 'payload': {'turn_id': 'other-turn', 'model': 'requested'}},
+                {'type': 'token_usage_record', 'timestamp': '2026-10-10T00:00:00Z', 'payload': {
+                    'thread_id': 'root-thread', 'turn_id': 'other-turn', 'response_id': 'other-response',
+                    'usage': {'input_tokens': 10, 'cached_input_tokens': 0, 'output_tokens': 2},
+                    'turn_token_usage': {'input_tokens': 10, 'cached_input_tokens': 0, 'output_tokens': 2}}},
+                {'type': 'turn_context', 'payload': {'turn_id': 'paper-turn', 'model': 'requested'}},
+                {'type': 'response_item', 'payload': {'content': 'PRIVATE RESEARCH BODY'}},
+                {'type': 'token_usage_record', 'timestamp': '2026-10-10T01:00:00Z', 'payload': {
+                    'thread_id': 'root-thread', 'turn_id': 'paper-turn', 'response_id': 'paper-r1',
+                    'usage': {'input_tokens': 100, 'cached_input_tokens': 40, 'output_tokens': 20},
+                    'turn_token_usage': {'input_tokens': 100, 'cached_input_tokens': 40, 'output_tokens': 20}}},
+                {'type': 'token_usage_record', 'timestamp': '2026-10-10T02:00:00Z', 'payload': {
+                    'thread_id': 'root-thread', 'turn_id': 'paper-turn', 'response_id': 'paper-r2',
+                    'usage': {'input_tokens': 150, 'cached_input_tokens': 100, 'output_tokens': 30},
+                    'turn_token_usage': {'input_tokens': 250, 'cached_input_tokens': 140, 'output_tokens': 50}}},
+                {'type': 'event_msg', 'timestamp': '2026-10-10T02:00:00Z', 'payload': {'type': 'token_count',
+                    'info': {'total_token_usage': {'input_tokens': 260, 'cached_input_tokens': 140,
+                                                   'output_tokens': 52}}}},
+            ]
+            path.write_text('\n'.join(json.dumps(event) for event in events))
+            records, diagnostics = read_records([path], selected_turn_ids={'root-thread': ['paper-turn']})
+            report = aggregate(records, expected_threads=['root-thread'], full_tree=True,
+                               diagnostics=diagnostics)
+        self.assertEqual(report['total_tokens'], 300)
+        self.assertEqual(report['response_count'], 2)
+        self.assertTrue(report['coverage_complete'])
+        self.assertEqual(report['totals']['cached_input_tokens']['observed'], 140)
+        self.assertNotIn('PRIVATE RESEARCH BODY', json.dumps(report))
+
+    def test_receipt_missing_turn_total_blocks_complete_usage(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / 'session.jsonl'
+            path.write_text(json.dumps({'type': 'token_usage_record', 'payload': {
+                'thread_id': 'owner', 'turn_id': 'paper-turn', 'response_id': 'r1',
+                'usage': {'input_tokens': 100, 'cached_input_tokens': 20, 'output_tokens': 10}}}))
+            records, diagnostics = read_records([path])
+            report = aggregate(records, expected_threads=['owner'], full_tree=True,
+                               diagnostics=diagnostics)
+        self.assertFalse(report['coverage_complete'])
+        self.assertIn({'kind': 'receipt_turn_total_unavailable', 'turn_id': 'paper-turn'}, diagnostics)
+
     def test_workflow_metadata_uses_actual_exact_dispatch_and_never_guesses_stage(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

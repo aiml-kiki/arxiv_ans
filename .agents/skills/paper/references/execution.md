@@ -26,7 +26,7 @@ owner 按已授权范围自主创建有收益的局部助手，由本人接收�
 
 ## 计量与最终门
 
-启动封套和后续控制包使用软预算，不能截断必要科学材料。usage 在既有工具批次或离线汇总采集，不新增模型轮询；逐响应、全树汇总和累计快照须区分并去重，cached 输入计入 token，reasoning 是 output 子项时不重复相加。不可见数据记 unavailable，字符量仅代理指标，不报真实 token 或节省率。离线聚合用 `usage --input <选定本地JSON或JSONL> --scope-manifest <范围.json> --output <库根相对计量.json> [--baseline <同范围完整基线.json>]`；input 可重复，范围声明 `evaluation_scope/expected_threads/full_tree`，只保存计量元数据，不将会话正文复制到库或远端。Codex JSONL 的首个 `total_token_usage` 是线程累计快照，可能包含该线程此前工作；选择完整隔离线程作为评估范围，或用正确观测边界取得增量。不能直接将首个累计量归为当前 run/stage 的精确用量，无法归属时保留缺测/范围限制。缺实时遥测时预算是提示，不能声称硬拦截每次生成。
+启动封套和后续控制包使用软预算，不能截断必要科学材料。usage 在既有工具批次或离线汇总采集，不新增模型轮询；逐响应、全树汇总和累计快照须区分并去重，cached 输入计入 token，reasoning 是 output 子项时不重复相加。不可见数据记 unavailable，字符量仅代理指标，不报真实 token 或节省率。离线聚合用 `usage --input <选定本地JSON或JSONL> --scope-manifest <范围.json> --output <库根相对计量.json> [--baseline <同范围完整基线.json>]`；input 可重复，范围声明 `evaluation_scope/expected_threads/full_tree`，只保存计量元数据，不将会话正文复制到库或远端。新版 Codex JSONL 若有逐响应 `token_usage_record`，优先使用它并核对同 turn 累计值，避免与 `token_count` 快照重复相加；同一桌面线程含多任务时用 `selected_turn_ids` 映射选择真实 turn，并用 `actor_thread_ids` 把 workflow 代理 ID 绑定到实际线程 ID。旧 JSONL 的首个 `total_token_usage` 是线程累计快照，可能包含该线程此前工作；选择完整隔离线程作为评估范围，或用正确观测边界取得增量。不能直接将首个累计量归为当前 run/stage 的精确用量，无法归属时保留缺测/范围限制。缺实时遥测时预算是提示，不能声称硬拦截每次生成。
 
 当前桌面工具没有主动压缩接口；自动压缩的配置或 API 能力不证明本会话已加载/发生。压缩后由 owner 读短科学状态及当前指南定向补证。写状态文件不移除已有消息；不按阶段重启 owner 伪装节省。
 
