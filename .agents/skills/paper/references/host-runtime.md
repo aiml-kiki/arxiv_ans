@@ -86,7 +86,7 @@ mode 必须与预留一致；新 spawn 必须 `fork_turns:none`，followup 必�
 }
 ```
 
-三字段均必填；answer/limitations 是非空文本，evidence 是非空定位数组，只能引用任务 source_refs 的固定路径。解释须满足问题的接受条件，JSON 合法不等于科学成立。owner 定向核证后整合，助手短结果不逐层转发主会话；详尽局部结果可留本人独占区。
+三字段均必填；answer/limitations 是非空文本，evidence 是非空定位数组，只能引用任务 source_refs 的固定路径。R4 初稿助手可另写本人独占目录中的 Markdown 初稿，并在 `answer` 给出相对路径和 SHA；该初稿只作为 owner 的输入，不能直接作为唯一候选或替代 owner 的 checkpoint。解释须满足问题的接受条件，JSON 合法不等于科学成立。owner 定向核证后整合，助手短结果不逐层转发主会话；详尽局部结果可留本人独占区。
 
 ```json
 {

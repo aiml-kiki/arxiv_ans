@@ -2,7 +2,7 @@
 
 **输入准备：** 按 [owner 契约](../../paper/references/unit-owner.md#输入暂停与恢复)登记旧页/冻结对照/相关知识的真实快照；缺输入时 awaiting_input→补齐→preparing，本人继续。接受产物按引用使用，成文才加载下面资源。
 
-本轮 B13，仅在 R1–R3 所需产物已接受后运行。加载 [论文模板](../assets/paper.md)、[共用写作](../../paper/references/writing.md)、[Obsidian](../../paper/references/obsidian.md)及科学草稿的接受接口/旧正式页有关段落。模板不要提前进入三遍科学轮次。
+本轮 B13，仅在 R1–R3 所需产物已接受后运行。加载 [论文模板](../assets/paper.md)、[共用写作](../../paper/references/writing.md)、[Obsidian](../../paper/references/obsidian.md)及科学草稿的接受接口/旧正式页有关段落。模板不要提前进入三遍科学轮次。若按 [上下文成本与证据交接](../../paper/references/context-cost.md)有净收益，可由全新上下文助手组织初稿；owner 必须裁决科学内容并承担唯一候选写入。
 
 按读者主线组织：一屏结论与边界→背景→可点击机制地图→模块深读→按主张核证→最小虚拟重实现→讨论。地图默认用 Markdown 层级提纲，节点直接链正文；并行、反馈或训练/推理分叉只有 Mermaid 明显更清楚时才换图。总览只保留主路径与交接，关键局部按复杂度另展开一层。图不凭摘要新增设计，正文不逐句复述图。
 

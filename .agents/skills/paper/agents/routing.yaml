@@ -33,6 +33,7 @@ task_routes:
   knowledge_dedup: organize
   knowledge_semantic_revision: maintain
   controlled_composition: compose
+  r4_fresh_draft_when_full_tree_break_even: compose
 dispatch:
   independent_multiple_papers: one_autonomous_owner_per_paper
   comparison_trace_knowledge: one_autonomous_owner_per_unit
@@ -43,12 +44,18 @@ dispatch:
   unit_internal_checkpoints: true
   guidance_loads_current_stage_only: true
   helper_when: bounded_cross_tier_task_benefit_exceeds_full_tree_start_input_output_review_retry_wait_cost
+  r4_draft_helper_when: accepted_science_and_predicted_full_tree_net_saving
+  r4_draft_helper_scope: initial_draft_only_owner_checks_decisive_mechanism_edges_evidence_alternative
+  physical_owner_handover_when: accepted_pass_boundary_and_repeated_context_growth_after_local_delegation
+  physical_owner_handover_requires: actual_old_owner_stop_short_source_bound_state_new_owner_decisive_source_check
   read_owner_default: medium_continuous_owner_with_quality_fallback
   low_tier_helper_when: bounded_source_or_numeric_check_cannot_be_cheaper_by_script_or_owner
   high_tier_helper_when: central_mechanism_conflict_or_unexcluded_attribution_or_decisive_alternative
   high_tier_helper_not_per_paper: true
   helper_return_requires: source_location_competing_explanations_distinguishing_observation_limits
   owner_verifies_decisive_helper_evidence: true
+  selective_evidence_index: only_when_cross_context_reuse_has_net_benefit
+  evidence_index_content: source_hash_page_offsets_excerpt_hash_no_copied_source_text
   helper_parent: owning_unit_owner
   helper_default_delegates: false
   helper_returns_to: owning_unit_owner_only
@@ -80,6 +87,8 @@ context:
   bootstrap_tokens_soft_target: [800, 1200]
   later_packet_tokens_soft_target: [300, 600]
   helper_return_tokens_soft_target: [300, 600]
+  event_wait: final_or_exception_or_meaningful_stage_change_with_bounded_long_wait
+  stage_usage_attribution: actual_begin_to_checkpoint_only_else_unattributed
   token_metrics: actual_usage_only
   control_packet_proxy: explicit_characters_when_exact_tokenizer_unavailable
   source_budget: actual_scientific_need_not_instruction_target

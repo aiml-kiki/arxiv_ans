@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from lib.usage import aggregate, compare_reports, read_records, attach_run_metadata
+from lib.usage import aggregate, compare_reports, read_records, attach_run_metadata, stage_profile, normalize
 
 
 SCOPE = {'source_versions': ['paper-a:v1'], 'question': 'same', 'research_scope': 'read+compare+knowledge+review',
@@ -209,6 +209,23 @@ class Usage(unittest.TestCase):
                            '--scope-manifest', 'scope.json'])
         self.assertFalse(result['coverage_complete'])
         self.assertIn({'kind': 'registered_tree_actor_omitted', 'actors': ['helper', 'root']}, result['diagnostics'])
+
+    def test_stage_profile_marks_transition_traffic_unattributed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            path = root / '.research/work/probe/workflow.json'
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps({'units': {'paper-a': {'owner_history': [{'agent_id': 'owner'}]}},
+                'events': [{'event': 'internal_checkpoint', 'operation': 'begin', 'unit': 'paper-a',
+                            'stage': 'R1', 'at': '2026-10-10T01:00:00Z'},
+                           {'event': 'scientific_checkpoint', 'unit': 'paper-a', 'stage': 'R1',
+                            'at': '2026-10-10T02:00:00Z'}]}))
+            inside_stage = record(timestamp='2026-10-10T01:30:00Z')
+            transition = record(response='r2', timestamp='2026-10-10T02:30:00Z')
+            rows = [normalize(row) for row in (inside_stage, transition)]
+            result = stage_profile(root, 'probe', rows, {})
+        self.assertEqual(result['buckets']['paper-a/R1']['responses'], 1)
+        self.assertEqual(result['buckets']['paper-a/transition']['responses'], 1)
 
     def test_usage_main_returns_compact_dict_for_research_entry(self):
         with tempfile.TemporaryDirectory() as temp:

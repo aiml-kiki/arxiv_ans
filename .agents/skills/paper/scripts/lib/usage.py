@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 from collections import defaultdict
+from datetime import datetime
 import json
 import sys
 from pathlib import Path
@@ -358,6 +359,66 @@ def attach_run_metadata(root, run_id, records):
             'full_tree_membership': 'unavailable unless scope manifest includes root and all actual actors'}
 
 
+def stage_profile(root, run_id, records, actor_thread_ids):
+    """Attribute identified responses only inside observed begin..checkpoint windows.
+
+    Transition/recovery traffic stays explicitly unattributed instead of being
+    silently charged to the previous science stage.
+    """
+    state = read_json(inside(root, f'.research/work/{run_id}/workflow.json'))
+    owner_units = {}
+    for unit_id, unit in state.get('units', {}).items():
+        for owner in unit.get('owner_history', []):
+            actor = owner.get('agent_id')
+            if actor:
+                owner_units.setdefault(actor_thread_ids.get(actor, actor), set()).add(unit_id)
+    runtime = state.get('runtime', {})
+    root_id = (runtime.get('capabilities') or {}).get('root_agent_id')
+    root_thread = actor_thread_ids.get(root_id, root_id)
+    helper_threads = {actor_thread_ids.get(item['agent_id'], item['agent_id']): key
+                      for key, item in runtime.get('helpers', {}).items() if item.get('agent_id')}
+    windows = defaultdict(list)
+    begins = {}
+    for event in state.get('events', []):
+        key = (event.get('unit'), event.get('stage'))
+        moment = event.get('at')
+        if not key[0] or not key[1] or not moment:
+            continue
+        when = datetime.fromisoformat(moment.replace('Z', '+00:00'))
+        if event.get('event') == 'internal_checkpoint' and event.get('operation') == 'begin':
+            begins[key] = when
+        elif event.get('event') == 'scientific_checkpoint' and key in begins:
+            start = begins.pop(key)
+            if start <= when:
+                windows[key[0]].append((start, when, key[1]))
+    buckets = defaultdict(lambda: {'responses': 0, 'input_tokens': 0, 'cached_input_tokens': 0,
+                                   'output_tokens': 0, 'missing_usage': 0})
+    for row in records:
+        if row.get('measurement_scope') != 'response' or not row.get('response_id'):
+            continue
+        thread = row.get('thread_id')
+        units = owner_units.get(thread, set())
+        bucket = ('root' if thread and thread == root_thread else
+                  f'helper/{helper_threads[thread]}' if thread in helper_threads else
+                  f'{next(iter(units))}/transition' if len(units) == 1 else 'unattributed')
+        if len(units) == 1 and row.get('timestamp'):
+            instant = datetime.fromisoformat(row['timestamp'].replace('Z', '+00:00'))
+            found = [f'{unit}/{stage}' for unit in units for start, end, stage in windows[unit]
+                     if start <= instant <= end]
+            if len(found) == 1:
+                bucket = found[0]
+        target = buckets[bucket]
+        target['responses'] += 1
+        for metric in ('input_tokens', 'cached_input_tokens', 'output_tokens'):
+            value = row['usage'][metric]
+            if value is None:
+                target['missing_usage'] += 1
+            else:
+                target[metric] += value
+    return {'basis': 'identified owner response timestamp within actual stage begin..checkpoint; root/helper/transition separated',
+            'buckets': dict(sorted(buckets.items()))}
+
+
 def _add_options(parser):
     parser.add_argument('--root', type=Path, default=default_root())
     parser.add_argument('--input', action='append', required=True, help='选定本地 usage JSON 或 Codex JSONL；可重复')
@@ -403,6 +464,7 @@ def run(root, args):
         diagnostics=diagnostics)
     if run_metadata:
         report['run_metadata'] = run_metadata
+        report['stage_profile'] = stage_profile(root, args.run, records, manifest.get('actor_thread_ids') or {})
     if args.baseline:
         report['comparison'] = compare_reports(read_json(inside(root, args.baseline)), report)
     if args.output:
