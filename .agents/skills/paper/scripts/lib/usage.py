@@ -462,6 +462,11 @@ def stage_profile(root, run_id, records, actor_thread_ids):
         when = datetime.fromisoformat(moment.replace('Z', '+00:00'))
         if event.get('event') == 'internal_checkpoint' and event.get('operation') == 'begin':
             begins[key] = when
+        elif (event.get('event') == 'interrupted' or
+              (event.get('event') == 'internal_checkpoint' and event.get('operation') == 'awaiting-input')) and key in begins:
+            start = begins.pop(key)
+            if start <= when:
+                windows[key[0]].append((start, when, key[1]))
         elif event.get('event') == 'scientific_checkpoint' and key in begins:
             start = begins.pop(key)
             if start <= when:
@@ -490,7 +495,7 @@ def stage_profile(root, run_id, records, actor_thread_ids):
                 target['missing_usage'] += 1
             else:
                 target[metric] += value
-    return {'basis': 'identified owner response timestamp within actual stage begin..checkpoint; root/helper/transition separated',
+    return {'basis': 'identified owner response timestamp within actual stage begin..checkpoint or begin..interrupt/pause; root/helper/transition separated',
             'buckets': dict(sorted(buckets.items()))}
 
 

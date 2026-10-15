@@ -263,6 +263,27 @@ class Usage(unittest.TestCase):
         self.assertEqual(result['buckets']['paper-a/R1']['responses'], 1)
         self.assertEqual(result['buckets']['paper-a/transition']['responses'], 1)
 
+    def test_stage_profile_retains_interrupted_work_and_excludes_recovery_gap(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            path = root / '.research/work/probe/workflow.json'
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps({'units': {'paper-a': {'owner_history': [{'agent_id': 'owner'}]}},
+                'events': [
+                    {'event': 'internal_checkpoint', 'operation': 'begin', 'unit': 'paper-a',
+                     'stage': 'R2', 'at': '2026-10-10T01:00:00Z'},
+                    {'event': 'interrupted', 'unit': 'paper-a', 'stage': 'R2',
+                     'at': '2026-10-10T02:00:00Z'},
+                    {'event': 'internal_checkpoint', 'operation': 'begin', 'unit': 'paper-a',
+                     'stage': 'R2', 'at': '2026-10-10T03:00:00Z'},
+                    {'event': 'scientific_checkpoint', 'unit': 'paper-a', 'stage': 'R2',
+                     'at': '2026-10-10T04:00:00Z'}]}))
+            rows = [normalize(record(response=f'r{i}', timestamp=f'2026-10-10T{hour}:30:00Z'))
+                    for i, hour in enumerate(['01', '02', '03'])]
+            result = stage_profile(root, 'probe', rows, {})
+        self.assertEqual(result['buckets']['paper-a/R2']['responses'], 2)
+        self.assertEqual(result['buckets']['paper-a/transition']['responses'], 1)
+
     def test_usage_main_returns_compact_dict_for_research_entry(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
