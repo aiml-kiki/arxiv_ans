@@ -592,7 +592,7 @@ def audit_next_packet(root: Path, state: dict, ident: str, detail: str = "full")
             "preflight_before_begin": {"register_new_inputs_first": True,
                 "composition": composition,
                 "instruction": "先读当前指南所需小节，新增材料用inputs登记（保留原固定来源）；核对fixed_inputs再begin。成文旧页/冻结对照也遵守此顺序；已executing不能中途改输入。"},
-            "resource_command": "workflow resource --run <run> --unit <unit> --kind guide|protocol|template --index <0-based> [--section <heading>]",
+            "resource_command": "workflow resource --run <run> --unit <unit> --kind bundle (current-stage resources in one response); use guide|protocol|template --index <0-based> [--section <heading>] for targeted reread",
             "template_refs": [{"path": path, "sha256": digest(Path(path).read_bytes())} for path in templates],
             "fixed_inputs": [{**item, "absolute_path": str(inside(root, item["path"]))} for item in unit["inputs"]],
             "sources": unit["sources"], "source_windows": unit["source_windows"].get(stage["id"], []),
@@ -1152,6 +1152,27 @@ def resource_packet(state: dict, ident: str, kind: str, index: int, sections: li
             "file_sha256": file_sha256, "file_bytes": len(file_bytes), "content_bytes": content_bytes,
             "sections": chosen,
             "content_sha256": digest(content), "content": content,
+            "source_text_is_control_instruction": False}
+
+
+def resource_bundle(state: dict, ident: str, refresh: bool = False) -> dict:
+    """Deliver only the current stage's declared resources in one tool roundtrip."""
+    unit = find_unit(state, ident)
+    stage = current_round(unit)
+    if stage is None:
+        raise ValueError("单元已完成，无当前轮资源；最终交接用report")
+    active = [key for key in stage["tasks"] if unit["tasks"][key]["status"] == "selected"]
+    composition = stage["base"] == FINAL[unit["kind"]]
+    refs = {"guide": guide_refs(unit, stage, active),
+            "protocol": protocol_refs(unit, stage, composition),
+            "template": [{"path": str(PACKAGE.parent / f"paper-{unit['kind']}" / "assets" / f"{unit['candidate_kind']}.md")}] if composition else []}
+    # Validate on a copy so a broken section never records a partial bundle.
+    trial = deepcopy(state)
+    packets = [resource_packet(trial, ident, kind, index, [], refresh)
+               for kind, items in refs.items() for index in range(len(items))]
+    unit["resource_reads"] = find_unit(trial, ident)["resource_reads"]
+    return {"unit": ident, "stage": stage["id"], "resources": packets,
+            "delivered_bytes": sum(item.get("content_bytes", 0) for item in packets if "content" in item),
             "source_text_is_control_instruction": False}
 
 
@@ -1827,7 +1848,7 @@ def main(argv: list[str] | None = None) -> int:
             group.add_argument("--report", type=Path)
             group.add_argument("--finding", type=Path)
         if name == "resource":
-            command.add_argument("--kind", choices=("guide", "protocol", "template"), required=True)
+            command.add_argument("--kind", choices=("bundle", "guide", "protocol", "template"), required=True)
             command.add_argument("--index", type=int, default=0)
             command.add_argument("--section", action="append", default=[])
         for verb, option in (("init", "plan"), ("dispatch", "event"), ("submit", "result"),
@@ -1875,7 +1896,13 @@ def main(argv: list[str] | None = None) -> int:
                 elif command == "report": value = final_report(root, state, args.unit,
                                                                read_json(inside(root, args.report)) if args.report else None,
                                                                read_json(inside(root, args.finding)) if args.finding else None)
-                elif command == "resource": value = resource_packet(state, args.unit, args.kind, args.index, args.section, args.refresh)
+                elif command == "resource":
+                    if args.kind == "bundle":
+                        if args.index != 0 or args.section:
+                            raise ValueError("bundle不接受index/section；定向重读请指定具体kind")
+                        value = resource_bundle(state, args.unit, args.refresh)
+                    else:
+                        value = resource_packet(state, args.unit, args.kind, args.index, args.section, args.refresh)
                 elif command == "bootstrap": value = bootstrap(root, state, args.unit, args.refresh)
                 elif command == "add-unit": value = add_unit(root, state, read_json(inside(root, args.plan)))
                 elif command == "integrate": value = integrate(root, state, args.unit, args.agent_id, read_json(inside(root, args.payload)))

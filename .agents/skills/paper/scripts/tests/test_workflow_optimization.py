@@ -274,6 +274,32 @@ class WorkflowOptimization(unittest.TestCase):
         self.put("source.md", "unregistered source change")
         self.assertIn("已固定文件变动", w.recovery(self.root, state, "u")["units"]["u"]["integrity"])
 
+    def test_every_declared_protocol_section_resolves(self):
+        for kind, stages in w.STAGES.items():
+            for stage_id, _, _ in stages:
+                refs = w.protocol_refs({"kind": kind}, {"base": stage_id}, stage_id == w.FINAL[kind])
+                for ref in refs:
+                    with self.subTest(kind=kind, stage=stage_id, path=ref["path"]):
+                        raw = Path(ref["path"]).read_text(encoding="utf-8")
+                        self.assertTrue(w.markdown_sections(raw, ref.get("sections", [])))
+
+    def test_stage_resource_bundle_is_atomic_and_deduplicates(self):
+        state = self.init()
+        bundle = w.resource_bundle(state, "u")
+        self.assertEqual(bundle["stage"], "R1")
+        self.assertEqual(bundle["delivered_bytes"], sum(item["content_bytes"] for item in bundle["resources"]))
+        self.assertTrue(all("content" in item for item in bundle["resources"]))
+        self.assertEqual(len(state["units"]["u"]["resource_reads"]), len(bundle["resources"]))
+        repeated = w.resource_bundle(state, "u")
+        self.assertEqual(repeated["delivered_bytes"], 0)
+        self.assertTrue(all(item["status"] == "unchanged" for item in repeated["resources"]))
+        before = deepcopy(state["units"]["u"]["resource_reads"])
+        with patch.object(w, "protocol_refs", return_value=[{"path": str(w.PACKAGE / "references/protocol-source.md"),
+                                                               "sections": ["missing heading"]}]):
+            with self.assertRaises(ValueError):
+                w.resource_bundle(state, "u", refresh=True)
+        self.assertEqual(state["units"]["u"]["resource_reads"], before)
+
     def test_knowledge_no_change_short_exit_requires_impact_checks(self):
         state = self.init("knowledge")
         self.prepare(state)
