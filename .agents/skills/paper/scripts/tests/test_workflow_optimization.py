@@ -147,6 +147,107 @@ class WorkflowOptimization(unittest.TestCase):
         w.final_report(self.root, state, "u", finding=self.finding(final=True))
         self.assertIn("论文/A.md", w.candidates(self.root, state)["mapping"])
 
+    def test_opt_in_pass_checkpoint_preserves_substep_order_and_sources(self):
+        plan = self.plan()
+        plan['units'][0]['checkpoint_mode'] = 'pass_trial'
+        state = w.initialize(self.root, 'probe', plan)
+        w.start_owner(self.root, state, 'u', {'observed': True, 'mode': 'spawn',
+            'agent_id': 'actual-owner', 'tool': 'collaboration.spawn_agent', 'call_id': 'actual-call'})
+        unit = state['units']['u']
+        self.assertEqual([item['id'] for item in unit['rounds']], ['R1', 'R2', 'R3', 'R4'])
+        self.prepare(state)
+        w.checkpoint(self.root, state, 'u', 'actual-owner', self.payload(state))
+        unit = state['units']['u']
+        self.assertEqual(w.current_round(unit)['id'], 'R2')
+        self.assertEqual(w.next_packet(self.root, state, 'u')['substep'], 'R2a')
+        self.prepare(state)
+        with self.assertRaisesRegex(ValueError, '内部问题尚未'):
+            w.checkpoint(self.root, state, 'u', 'actual-owner', self.payload(state))
+        for substep_id in ['R2a', 'R2b', 'R2c']:
+            unit = state['units']['u']
+            stage = w.current_round(unit)
+            current = w.active_substep(stage)
+            self.assertEqual(current['id'], substep_id)
+            decisions = {key: {'status': 'selected', 'reason': 'fixed source requires this mechanism check'}
+                         for key in current['tasks'] if unit['tasks'][key]['status'] == 'pending'}
+            if decisions:
+                w.decide_tasks(state, 'u', decisions)
+            draft = self.root / unit['science_draft']
+            self.put(unit['science_draft'], (draft.read_text() if draft.exists() else '# Science\n') +
+                     f'\n## {substep_id}\nSource-bound analysis.\n')
+            payload = {'substep': substep_id, 'draft_sha256': digest(draft.read_bytes()),
+                'delta': [{'locator': f'## {substep_id}', 'summary': 'specific mechanism and source',
+                           'task_ids': w.selected_tasks(unit, stage)}],
+                'evidence': [{'path': 'source.md', 'locator': 'section 1'}], 'finding': self.finding()}
+            result = w.substep_complete(self.root, state, 'u', 'actual-owner', payload)
+            self.assertEqual(result['accepted_substep'], substep_id)
+            with self.assertRaisesRegex(ValueError, '只能记录当前内部问题|只用于已begin'):
+                w.substep_complete(self.root, state, 'u', 'actual-owner', payload)
+        self.assertEqual(w.next_packet(self.root, state, 'u')['action'], 'checkpoint_current_pass')
+        w.checkpoint(self.root, state, 'u', 'actual-owner', self.payload(state))
+        unit = state['units']['u']
+        self.assertEqual(w.current_round(unit)['id'], 'R3')
+        self.assertEqual(w.next_packet(self.root, state, 'u')['substep'], 'R3a')
+        self.assertEqual(len([event for event in state['events'] if event.get('event') == 'scientific_checkpoint']), 2)
+        repeated = w.repeat_round(state, 'u', 'R2', 'check a second fixed mechanism case')
+        self.assertEqual(repeated['added_round'], 'R2-2')
+        self.assertEqual([step['status'] for step in w.find_round(unit, 'R2-2')['substeps']], ['ready'] * 3)
+        w.reopen(state, 'u', 'R2', 'source interpretation changed')
+        self.assertEqual([step['status'] for step in w.find_round(unit, 'R2')['substeps']], ['ready'] * 3)
+        self.assertEqual(w.next_packet(self.root, state, 'u')['substep'], 'R2a')
+
+    def test_pass_trial_explicitly_skips_inapplicable_substep(self):
+        plan = self.plan()
+        plan['units'][0]['checkpoint_mode'] = 'pass_trial'
+        state = w.initialize(self.root, 'probe', plan)
+        w.start_owner(self.root, state, 'u', {'observed': True, 'mode': 'spawn',
+            'agent_id': 'actual-owner', 'tool': 'collaboration.spawn_agent', 'call_id': 'actual-call'})
+        self.prepare(state)
+        w.checkpoint(self.root, state, 'u', 'actual-owner', self.payload(state))
+        w.decide_tasks(state, 'u', {key: {'status': 'not_applicable',
+            'reason': 'fixed source contains no such operation'} for key in ['B2', 'B3']})
+        w.owner_step(self.root, state, 'u', 'actual-owner', 'begin', None)
+        with self.assertRaisesRegex(ValueError, '显式记录not_applicable'):
+            w.substep_complete(self.root, state, 'u', 'actual-owner', {'substep': 'R2a'})
+        result = w.substep_complete(self.root, state, 'u', 'actual-owner',
+                                    {'substep': 'R2a', 'decision': 'not_applicable'})
+        self.assertEqual(result['next_substep'], 'R2b')
+        self.assertEqual(w.next_packet(self.root, state, 'u')['substep'], 'R2b')
+
+    def test_pass_trial_reaches_final_candidate_without_skipping_third_pass(self):
+        plan = self.plan()
+        plan['units'][0]['checkpoint_mode'] = 'pass_trial'
+        state = w.initialize(self.root, 'probe', plan)
+        w.start_owner(self.root, state, 'u', {'observed': True, 'mode': 'spawn',
+            'agent_id': 'actual-owner', 'tool': 'collaboration.spawn_agent', 'call_id': 'actual-call'})
+        while w.current_round(state['units']['u']):
+            self.prepare(state)
+            while True:
+                unit = state['units']['u']
+                stage = w.current_round(unit)
+                substep = w.active_substep(stage)
+                if substep is None:
+                    break
+                draft = self.root / unit['science_draft']
+                self.put(unit['science_draft'], (draft.read_text() if draft.exists() else '# Science\n') +
+                         f'\n## {substep["id"]}\nSource-bound finding.\n')
+                w.substep_complete(self.root, state, 'u', 'actual-owner', {
+                    'substep': substep['id'], 'draft_sha256': digest(draft.read_bytes()),
+                    'delta': [{'locator': f'## {substep["id"]}', 'summary': 'source-bound inference',
+                               'task_ids': w.selected_tasks(unit, stage)}],
+                    'evidence': [{'path': 'source.md', 'locator': 'section 1'}],
+                    'finding': self.finding()})
+            w.checkpoint(self.root, state, 'u', 'actual-owner', self.payload(state))
+        unit = state['units']['u']
+        self.assertEqual([stage['id'] for stage in unit['rounds'] if stage['accepted']],
+                         ['R1', 'R2', 'R3', 'R4'])
+        self.assertEqual([step['status'] for step in w.find_round(unit, 'R3')['substeps']],
+                         ['accepted', 'accepted'])
+        w.final_report(self.root, state, 'u',
+                       {'agent_id': 'actual-owner', 'conclusions': ['Mechanism under fixed conditions'],
+                        'unresolved': [], 'checks': []}, finding=self.finding(final=True))
+        self.assertIn('论文/A.md', w.candidates(self.root, state)['mapping'])
+
     def test_final_checkpoint_keeps_delivery_window_until_final_report(self):
         state = self.init()
         while w.current_round(state['units']['u']):

@@ -42,6 +42,17 @@ STAGES = {
                   ("K3", ["E3"], "explanation.md"),
                   ("K4", ["E7"], "composition.md")],
 }
+READ_PASS_STAGES = [
+    ("R1", ["B1"], "orientation.md", None),
+    ("R2", ["B2", "B3", "B4", "B5", "B6", "B7", "B8"], None, [
+        {"id": "R2a", "tasks": ["B2", "B3"], "guide": "mechanism.md"},
+        {"id": "R2b", "tasks": ["B4", "B5"], "guide": None},
+        {"id": "R2c", "tasks": ["B6", "B7", "B8"], "guide": "evidence.md"}]),
+    ("R3", ["B9", "B10", "B11", "B12"], None, [
+        {"id": "R3a", "tasks": ["B9", "B10"], "guide": "reconstruction.md"},
+        {"id": "R3b", "tasks": ["B11", "B12"], "guide": "reconstruction.md"}]),
+    ("R4", ["B13"], "composition.md", None),
+]
 FINAL = {kind: stages[-1][0] for kind, stages in STAGES.items()}
 LIVE = {"executing", "awaiting_review"}
 COMPLETE = {"accepted", "skipped"}
@@ -203,6 +214,15 @@ def current_round(unit: dict) -> dict | None:
     return next((item for item in unit["rounds"] if item["status"] not in COMPLETE), None)
 
 
+def active_substep(stage: dict) -> dict | None:
+    return next((item for item in stage.get('substeps', []) if item['status'] not in {'accepted', 'skipped'}), None)
+
+
+def effective_stage(stage: dict) -> dict:
+    substep = active_substep(stage)
+    return {**stage, **{key: substep[key] for key in ('id', 'tasks', 'guide')}, 'base': substep['id']} if substep else stage
+
+
 def complete(unit: dict) -> bool:
     return current_round(unit) is None
 
@@ -247,6 +267,11 @@ def initialize(root: Path, run: str, plan: dict, existing: dict | None = None) -
         unit_autonomy = spec.get("autonomy", autonomy)
         if unit_autonomy not in {"unit", "interactive"}:
             raise ValueError("单元autonomy须为unit或interactive")
+        checkpoint_mode = spec.get('checkpoint_mode', 'stage')
+        if checkpoint_mode not in {'stage', 'pass_trial'} or (checkpoint_mode == 'pass_trial' and kind != 'read'):
+            raise ValueError('checkpoint_mode仅read可试验pass_trial；默认stage保留原轮次')
+        if checkpoint_mode == 'pass_trial' and unit_autonomy != 'unit':
+            raise ValueError('pass_trial须由完整单元owner逐步执行，不用于交互带读')
         files, manifests = freeze_inputs(root, spec.get("inputs", []), kind)
         output_dir = inside(root, f".research/work/{run}/units/{ident}/results")
         draft_dir = inside(root, f".research/drafts/{run}/units/{ident}")
@@ -275,9 +300,13 @@ def initialize(root: Path, run: str, plan: dict, existing: dict | None = None) -
             if key not in applicable:
                 raise ValueError(f"{key}不是{kind}轮次任务")
             decisions[key] = task_decision(value)
+        stage_spec = (READ_PASS_STAGES if checkpoint_mode == 'pass_trial' else
+                      [(stage, leaves, guide, None) for stage, leaves, guide in STAGES[kind]])
         rounds = [{"id": stage, "base": stage, "tasks": leaves, "guide": guide,
                    "status": "ready", "dispatches": [], "pending": None, "accepted": None,
-                   "history": []} for stage, leaves, guide in STAGES[kind]]
+                   "history": [],
+                   **({"substeps": [{**step, "status": "ready"} for step in substeps]} if substeps else {})}
+                  for stage, leaves, guide, substeps in stage_spec]
         dependencies = []
         for value in spec.get("depends_on", []):
             dep = {"unit": value, "stage": None} if isinstance(value, str) else dict(value)
@@ -285,6 +314,7 @@ def initialize(root: Path, run: str, plan: dict, existing: dict | None = None) -
         units[ident] = {"id": ident, "kind": kind, "goal": spec.get("goal", goal), "inputs": files,
                         "sources": manifests, "depends_on": dependencies, "tasks": decisions,
                         "rounds": rounds, "owner": None, "owner_history": [], "handover": [],
+                        "checkpoint_mode": checkpoint_mode,
                         "autonomy": unit_autonomy, "owner_active": False,
                         "output_dir": str(output_dir.relative_to(root)), "draft_dir": str(draft_dir.relative_to(root)),
                         "draft": str(draft.relative_to(root)), "target": target,
@@ -371,13 +401,15 @@ def validate_target(root: Path, value: str) -> str:
 
 
 def selected_tasks(unit: dict, stage: dict) -> list[str]:
-    unresolved = [key for key in stage["tasks"] if unit["tasks"][key]["status"] == "pending"]
+    current = effective_stage(stage)
+    unresolved = [key for key in current["tasks"] if unit["tasks"][key]["status"] == "pending"]
     if unresolved:
         raise ValueError(f"本轮条件任务尚未判范围: {','.join(unresolved)}；用tasks给出selected或not_applicable与具体依据")
-    return [key for key in stage["tasks"] if unit["tasks"][key]["status"] == "selected"]
+    return [key for key in current["tasks"] if unit["tasks"][key]["status"] == "selected"]
 
 
 def guide_refs(unit: dict, stage: dict, active: list[str]) -> list[dict]:
+    stage = effective_stage(stage)
     capability = PACKAGE.parent / f"paper-{unit['kind']}"
     names = [stage["guide"]] if stage["guide"] else [name for key, name in (("B4", "learning.md"), ("B5", "proof.md")) if key in active]
     section = {"R3a": "替代与作者辩护", "R3b": "区分验证与细节保留"}.get(stage["base"])
@@ -513,6 +545,7 @@ def relevant_records(root: Path, state: dict, unit: dict, stage: dict, records: 
 
 
 def protocol_refs(unit: dict, stage: dict, composition: bool) -> list[dict]:
+    stage = effective_stage(stage)
     source_sections = ["实际覆盖与图像核验"]
     if stage["base"] in {"R1", "T0", "T1"}:
         source_sections.insert(0, "身份与固定版本")
@@ -547,6 +580,9 @@ def audit_next_packet(root: Path, state: dict, ident: str, detail: str = "full")
         return {"unit": ident, "status": "all_rounds_accepted", "candidate_kind": unit["candidate_kind"],
                 "draft": str(inside(root, unit["draft"])), "action": "report_final_result" if autonomous else "group_review",
                 "autonomy": autonomy_mode(unit), "publication": "requires_group_review_and_actual_authorization"}
+    if stage.get('substeps') and active_substep(stage) is None and stage['status'] == 'executing':
+        return {'unit': ident, 'stage': stage['id'], 'status': 'pass_ready_for_checkpoint',
+                'action': 'checkpoint_current_pass', 'science_state_ref': state_ref(state, ident, 'science_state')}
     records = prerequisite_records(root, state, unit)
     active = selected_tasks(unit, stage)
     task_catalog = catalog()
@@ -574,7 +610,8 @@ def audit_next_packet(root: Path, state: dict, ident: str, detail: str = "full")
             "followup_same_agent" if unit["owner"]["mode"] == "agent" else "continue_main_current_round")
     for ref in rules:
         ref["sha256"] = digest(Path(ref["path"]).read_bytes())
-    return {"unit": ident, "stage": stage["id"], "status": stage["status"],
+    return {"unit": ident, "stage": stage["id"], "substep": active_substep(stage)['id'] if active_substep(stage) else None,
+            "status": stage["status"],
             "action": action, "autonomy": autonomy_mode(unit), "detail": detail,
             "state_ref": str(state_path(root, state["run_id"]).relative_to(root)),
             "owner": unit["owner"], "goal": stage.get("goal", unit["goal"]), "question": unit["question"],
@@ -595,7 +632,7 @@ def audit_next_packet(root: Path, state: dict, ident: str, detail: str = "full")
             "resource_command": "workflow resource --run <run> --unit <unit> --kind bundle (current-stage resources in one response); use guide|protocol|template --index <0-based> [--section <heading>] for targeted reread",
             "template_refs": [{"path": path, "sha256": digest(Path(path).read_bytes())} for path in templates],
             "fixed_inputs": [{**item, "absolute_path": str(inside(root, item["path"]))} for item in unit["inputs"]],
-            "sources": unit["sources"], "source_windows": unit["source_windows"].get(stage["id"], []),
+            "sources": unit["sources"], "source_windows": unit["source_windows"].get(effective_stage(stage)["id"], []),
             "accepted": primary, "accepted_other_refs": addressable,
             "specific_revisions": [short_revision(value, detail) for value in stage["history"][-3:]],
             "revision_history_ref": {"path": str(state_path(root, state["run_id"]).relative_to(root)),
@@ -661,8 +698,12 @@ def next_packet(root: Path, state: dict, ident: str, detail: str = "compact") ->
     if not stage:
         return {"unit": ident, "status": "all_rounds_accepted", "action": "report_final_result",
                 "draft": unit["draft"], "science_state_ref": state_ref(state, ident, "science_state")}
-    pending = [key for key in stage["tasks"] if unit["tasks"][key]["status"] == "pending"]
-    active = [key for key in stage["tasks"] if unit["tasks"][key]["status"] == "selected"]
+    if stage.get('substeps') and active_substep(stage) is None and stage['status'] == 'executing':
+        return {'unit': ident, 'stage': stage['id'], 'status': 'pass_ready_for_checkpoint',
+                'action': 'checkpoint_current_pass', 'science_state_ref': state_ref(state, ident, 'science_state')}
+    current = effective_stage(stage)
+    pending = [key for key in current["tasks"] if unit["tasks"][key]["status"] == "pending"]
+    active = [key for key in current["tasks"] if unit["tasks"][key]["status"] == "selected"]
     tasks = catalog()
     refs = guide_refs(unit, stage, active)
     composition = stage["base"] == FINAL[unit["kind"]]
@@ -673,7 +714,8 @@ def next_packet(root: Path, state: dict, ident: str, detail: str = "compact") ->
               "record_task_decisions" if pending else
               "local_review" if stage["status"] == "awaiting_review" else
               "read_and_update" if stage["status"] == "executing" else "prepare_and_begin")
-    result = {"unit": ident, "stage": stage["id"], "status": stage["status"], "action": action,
+    result = {"unit": ident, "stage": stage["id"], "substep": current['id'] if current is not stage else None,
+              "status": stage["status"], "action": action,
               "question": stage.get("goal") or unit.get("question") or unit["goal"],
               "task_refs": active, "pending_tasks": {key: tasks[key]["applicability"] for key in pending},
               "resource_refs": [f"{kind}-{index}" for kind, items in resources.items() for index, ref in enumerate(items)],
@@ -681,7 +723,7 @@ def next_packet(root: Path, state: dict, ident: str, detail: str = "compact") ->
               "science_refs": {"draft": unit.get("science_draft"), "state": state_ref(state, ident, "science_state")},
               "changed_constraints": [item for item in state["constraint_history"] if item["at"] > unit.get("constraint_seen_at", state["created"])],
               "unresolved": (unit.get("science_state") or {}).get("unresolved", []),
-              "source_windows": unit.get("source_windows", {}).get(stage["id"], []),
+              "source_windows": unit.get("source_windows", {}).get(current["id"], []),
               "revision": short_revision(stage["history"][-1]) if stage["history"] else None}
     if stage["history"]:
         result["revision_ref"] = {**state_ref(state, ident, "rounds"),
@@ -872,6 +914,8 @@ def checkpoint(root: Path, state: dict, ident: str, agent_id: str, payload: dict
     stage = current_round(target)
     if not stage or stage["status"] != "executing" or payload.get("stage") != stage["id"]:
         raise ValueError("checkpoint仅接受当前已begin轮；不能预写三遍再回填")
+    if stage.get('substeps') and active_substep(stage) is not None:
+        raise ValueError('本遍内部问题尚未逐项记录，不能一次生成整遍结果后直接checkpoint')
     validate_finding(target, payload.get("finding", {}))
     decision = payload.get("decision", "accept")
     if decision not in {"accept", "revise"}:
@@ -963,6 +1007,98 @@ def checkpoint(root: Path, state: dict, ident: str, agent_id: str, payload: dict
     state.clear()
     state.update(working)
     return receipt
+
+
+def substep_complete(root: Path, state: dict, ident: str, agent_id: str, payload: dict) -> dict:
+    """Record a source-bound provisional read before exposing the next guide.
+
+    This is an opt-in experiment. Only the parent pass receives an accepted
+    scientific checkpoint; substeps are immutable progress, not accepted claims.
+    """
+    if not isinstance(payload, dict):
+        raise ValueError('substep须有实际科学增量payload')
+    working = deepcopy(state)
+    unit = find_unit(working, ident)
+    bound_owner(unit, agent_id)
+    stage = current_round(unit)
+    if not stage or stage['status'] != 'executing' or not stage.get('substeps'):
+        raise ValueError('substep只用于已begin的read pass_trial轮')
+    substep = active_substep(stage)
+    if not substep or payload.get('substep') != substep['id']:
+        raise ValueError('只能记录当前内部问题，不能跳步或回填未来步骤')
+    selected = selected_tasks(unit, stage)
+    if not selected:
+        if payload.get('decision') != 'not_applicable' or any(
+                unit['tasks'][key]['status'] != 'not_applicable' for key in substep['tasks']):
+            raise ValueError('当前内部问题无适用任务，须逐项决定并显式记录not_applicable')
+        substep.update(status='skipped', at=utc_now(),
+                       skip_reasons={key: unit['tasks'][key]['reason'] for key in substep['tasks']})
+        working['events'].append({'event': 'scientific_substep_skipped', 'event_type': 'internal_checkpoint',
+                                  'unit': ident, 'stage': stage['id'], 'substep': substep['id'],
+                                  'agent_id': agent_id, 'at': utc_now(), 'actual_host_call': False})
+        working['integration'] = None
+        following = active_substep(stage)
+        result = {'unit': ident, 'stage': stage['id'], 'skipped_substep': substep['id'],
+                  'next_substep': following['id'] if following else None,
+                  'action': 'read_next_substep' if following else 'checkpoint_current_pass'}
+        state.clear()
+        state.update(working)
+        return result
+    finding = payload.get('finding', {})
+    validate_finding(unit, finding)
+    if finding.get('review_kind') != 'self_check' or finding.get('reviewer') != agent_id:
+        raise ValueError('内部问题须由当前owner如实自查，独立复核留给整遍或最终候选')
+    draft = snapshot(root, unit['science_draft'])
+    if payload.get('draft_sha256') != draft['sha256']:
+        raise ValueError('substep须绑定当前真实科学草稿哈希')
+    previous_substeps = [item for item in stage['substeps'] if item['status'] == 'accepted']
+    previous = (previous_substeps[-1].get('draft_sha256') if previous_substeps else
+                next((item['accepted'].get('science_draft_sha256') for item in reversed(unit['rounds'])
+                      if item['accepted']), None))
+    if draft['sha256'] == previous:
+        raise ValueError('内部问题没有新增科学草稿，不能机械推进')
+    raw = inside(root, draft['path']).read_text(encoding='utf-8')
+    delta = payload.get('delta')
+    if not isinstance(delta, list) or not delta:
+        raise ValueError('substep须给可定位的科学增量')
+    covered = set()
+    for change in delta:
+        if text(change.get('locator'), 'substep.delta.locator') not in raw:
+            raise ValueError('substep.delta.locator须在当前科学草稿中')
+        if len(text(change.get('summary'), 'substep.delta.summary')) > 800:
+            raise ValueError('substep增量摘要须≤800字符')
+        ids = change.get('task_ids') or []
+        if any(key not in selected for key in ids):
+            raise ValueError('substep增量不能包含未来任务')
+        covered.update(ids)
+    if covered != set(selected):
+        raise ValueError('substep须覆盖当前适用任务，不得提前完成未来任务')
+    evidence = payload.get('evidence')
+    if not isinstance(evidence, list) or not evidence:
+        raise ValueError('substep须有固定来源定位')
+    allowed = allowed_evidence(root, working, unit)
+    located = [located_item(root, item, allowed, 'substep.evidence') for item in evidence]
+    version = preserved_version(root, working['run_id'], ident, stage['id'], draft, f"substep-{substep['id']}")
+    substep.update(status='accepted', at=utc_now(), draft_sha256=draft['sha256'],
+                   science_version=version, delta=delta, evidence=located, finding=finding)
+    working['events'].append({'event': 'scientific_substep', 'event_type': 'internal_checkpoint',
+                              'unit': ident, 'stage': stage['id'], 'substep': substep['id'],
+                              'agent_id': agent_id, 'draft_sha256': draft['sha256'], 'at': utc_now(),
+                              'actual_host_call': False})
+    working['integration'] = None
+    following = active_substep(stage)
+    if following:
+        pending = {key: unit['tasks'][key]['reason'] for key in following['tasks']
+                   if unit['tasks'][key]['status'] == 'pending'}
+        result = {'unit': ident, 'stage': stage['id'], 'accepted_substep': substep['id'],
+                  'next_substep': following['id'], 'pending_tasks': pending,
+                  'resources': None if pending else resource_bundle(working, ident)}
+    else:
+        result = {'unit': ident, 'stage': stage['id'], 'accepted_substep': substep['id'],
+                  'status': 'pass_ready_for_checkpoint', 'next': 'checkpoint current pass with full evidence/coverage'}
+    state.clear()
+    state.update(working)
+    return result
 
 
 def validate_finding(unit: dict, finding: dict, final: bool = False) -> None:
@@ -1117,7 +1253,10 @@ def resource_packet(state: dict, ident: str, kind: str, index: int, sections: li
     stage = current_round(unit)
     if stage is None:
         raise ValueError("单元已完成，无当前轮资源；最终交接用report")
-    active = [key for key in stage["tasks"] if unit["tasks"][key]["status"] == "selected"]
+    if stage.get('substeps') and active_substep(stage) is None:
+        raise ValueError('当前遍内部问题已完成，须先提交本遍checkpoint')
+    current = effective_stage(stage)
+    active = [key for key in current["tasks"] if unit["tasks"][key]["status"] == "selected"]
     composition = stage["base"] == FINAL[unit["kind"]]
     resources = {"guide": guide_refs(unit, stage, active),
                  "protocol": protocol_refs(unit, stage, composition),
@@ -1142,13 +1281,15 @@ def resource_packet(state: dict, ident: str, kind: str, index: int, sections: li
     reference_id = f"{kind}-{index}"
     reads = unit.setdefault("resource_reads", {})
     if key in reads and not refresh:
-        return {"unit": ident, "stage": stage["id"], "status": "unchanged", "ref": reference_id,
+        return {"unit": ident, "stage": stage["id"], "substep": current['id'] if current is not stage else None,
+                "status": "unchanged", "ref": reference_id,
                 "file_sha256": file_sha256, "content_sha256": digest(content),
                 "content_bytes": content_bytes, "sections": chosen}
     reads[key] = {"ref": reference_id, "path": str(path), "file_sha256": file_sha256,
                   "sections": chosen, "stage": stage["id"], "file_bytes": len(file_bytes),
                   "content_bytes": content_bytes, "at": utc_now()}
-    return {"unit": ident, "stage": stage["id"], "kind": kind, "index": index, "path": str(path),
+    return {"unit": ident, "stage": stage["id"], "substep": current['id'] if current is not stage else None,
+            "kind": kind, "index": index, "path": str(path),
             "file_sha256": file_sha256, "file_bytes": len(file_bytes), "content_bytes": content_bytes,
             "sections": chosen,
             "content_sha256": digest(content), "content": content,
@@ -1161,7 +1302,10 @@ def resource_bundle(state: dict, ident: str, refresh: bool = False) -> dict:
     stage = current_round(unit)
     if stage is None:
         raise ValueError("单元已完成，无当前轮资源；最终交接用report")
-    active = [key for key in stage["tasks"] if unit["tasks"][key]["status"] == "selected"]
+    if stage.get('substeps') and active_substep(stage) is None:
+        raise ValueError('当前遍内部问题已完成，须先提交本遍checkpoint')
+    current = effective_stage(stage)
+    active = [key for key in current["tasks"] if unit["tasks"][key]["status"] == "selected"]
     composition = stage["base"] == FINAL[unit["kind"]]
     refs = {"guide": guide_refs(unit, stage, active),
             "protocol": protocol_refs(unit, stage, composition),
@@ -1171,7 +1315,8 @@ def resource_bundle(state: dict, ident: str, refresh: bool = False) -> dict:
     packets = [resource_packet(trial, ident, kind, index, [], refresh)
                for kind, items in refs.items() for index in range(len(items))]
     unit["resource_reads"] = find_unit(trial, ident)["resource_reads"]
-    return {"unit": ident, "stage": stage["id"], "resources": packets,
+    return {"unit": ident, "stage": stage["id"], "substep": current['id'] if current is not stage else None,
+            "resources": packets,
             "delivered_bytes": sum(item.get("content_bytes", 0) for item in packets if "content" in item),
             "source_text_is_control_instruction": False}
 
@@ -1389,6 +1534,10 @@ def clear_from(unit: dict, stage: str, reason: str) -> set[str]:
             item["history"].append({"decision": "reopen", "reason": reason, "at": utc_now(),
                                     "previous_result": item["accepted"] or item["pending"]})
             item["accepted"], item["pending"], item["status"] = None, None, "revision_required"
+            for substep in item.get('substeps', []):
+                identity = {key: substep[key] for key in ('id', 'tasks', 'guide')}
+                substep.clear()
+                substep.update(identity, status='ready')
     unit.pop("final_report", None)
     unit.pop("final_review", None)
     if unit.get("science_state"):
@@ -1470,6 +1619,9 @@ def repeat_round(state: dict, ident: str, stage_id: str, reason: str) -> dict:
     ident_stage = f"{stage['base']}-{count}"
     new = {"id": ident_stage, "base": stage["base"], "tasks": stage["tasks"], "guide": stage["guide"],
            "goal": reason, "status": "ready", "dispatches": [], "pending": None, "accepted": None, "history": []}
+    if stage.get('substeps'):
+        new['substeps'] = [{**{key: step[key] for key in ('id', 'tasks', 'guide')}, 'status': 'ready'}
+                           for step in stage['substeps']]
     unit["rounds"].insert(index + 1, new)
     state["integration"] = None
     return {"unit": ident, "added_round": ident_stage, "goal": reason}
@@ -1544,7 +1696,10 @@ def update_constraints(state: dict, update: dict, affected: list[str]) -> dict:
 
 def locate_windows(root: Path, state: dict, ident: str, stage_id: str, windows: list[dict]) -> dict:
     unit = find_unit(state, ident)
-    stage = find_round(unit, stage_id)
+    stage = next((item for item in unit['rounds'] if item['id'] == stage_id or
+                  any(step['id'] == stage_id for step in item.get('substeps', []))), None)
+    if stage is None:
+        raise ValueError(f'轮次/内部问题不属于本单元: {stage_id}')
     if stage["status"] in COMPLETE or stage["status"] in LIVE:
         raise ValueError("不能更改已接受/实际执行轮的窗口；定向重开后再定位")
     if not isinstance(windows, list) or not windows:
@@ -1819,8 +1974,8 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     names = ("init", "status", "next", "recovery", "dispatch", "submit", "accept", "revise", "reopen",
              "tasks", "repeat", "inputs", "windows", "constraints", "interrupt", "candidates",
-             "start-owner", "adopt-owner", "step", "report", "resource", "bootstrap", "checkpoint", "add-unit", "integrate")
-    required_unit = {"next", "dispatch", "submit", "accept", "revise", "reopen", "tasks", "repeat", "inputs", "windows", "interrupt", "start-owner", "adopt-owner", "step", "report", "resource", "bootstrap", "checkpoint", "integrate"}
+             "start-owner", "adopt-owner", "step", "report", "resource", "bootstrap", "checkpoint", "substep", "add-unit", "integrate")
+    required_unit = {"next", "dispatch", "submit", "accept", "revise", "reopen", "tasks", "repeat", "inputs", "windows", "interrupt", "start-owner", "adopt-owner", "step", "report", "resource", "bootstrap", "checkpoint", "substep", "integrate"}
     for name in names:
         command = sub.add_parser(name)
         command.add_argument("--run", required=True)
@@ -1834,7 +1989,7 @@ def main(argv: list[str] | None = None) -> int:
             command.add_argument("--event", type=Path, required=True)
         if name in {"bootstrap", "resource"}:
             command.add_argument("--refresh", action="store_true")
-        if name in {"checkpoint", "integrate"}:
+        if name in {"checkpoint", "substep", "integrate"}:
             command.add_argument("--agent-id", required=True)
             command.add_argument("--payload", type=Path, required=True)
         if name == "add-unit":
@@ -1893,6 +2048,8 @@ def main(argv: list[str] | None = None) -> int:
                 elif command == "adopt-owner": value = adopt_owner(root, state, args.unit, read_json(inside(root, args.event)))
                 elif command == "step": value = owner_step(root, state, args.unit, args.agent_id, args.operation,
                                                           read_json(inside(root, args.payload)) if args.payload else None)
+                elif command == "substep": value = substep_complete(root, state, args.unit, args.agent_id,
+                                                                   read_json(inside(root, args.payload)))
                 elif command == "report": value = final_report(root, state, args.unit,
                                                                read_json(inside(root, args.report)) if args.report else None,
                                                                read_json(inside(root, args.finding)) if args.finding else None)

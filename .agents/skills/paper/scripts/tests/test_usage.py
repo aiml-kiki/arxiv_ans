@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from lib.usage import aggregate, compare_reports, read_records, attach_run_metadata, stage_profile, normalize
+from lib.usage import aggregate, compare_reports, read_records, attach_run_metadata, stage_profile, normalize, context_growth_profile
 
 
 SCOPE = {'source_versions': ['paper-a:v1'], 'question': 'same', 'research_scope': 'read+compare+knowledge+review',
@@ -22,6 +22,15 @@ def record(thread='owner', response='r1', **changes):
 
 
 class Usage(unittest.TestCase):
+    def test_context_growth_is_observation_not_handover_instruction(self):
+        rows = [normalize(record(response=f'r{i}', timestamp=f'2026-10-10T02:00:{i:02d}Z',
+            usage={'input_tokens': amount, 'cached_input_tokens': 0, 'output_tokens': 1}))
+            for i, amount in enumerate([100, 110, 120, 130, 180, 190])]
+        result = context_growth_profile(rows, window=3)['owner']
+        self.assertTrue(result['available'])
+        self.assertEqual(result['observed_mean_change'], 57)
+        self.assertNotIn('handover', result)
+
     def test_response_dedup_and_reasoning_cached_subsets(self):
         result = aggregate([record(), record()], expected_threads=['owner'], evaluation_scope=SCOPE, full_tree=True)
         self.assertEqual(result['total_tokens'], 120)
@@ -133,6 +142,33 @@ class Usage(unittest.TestCase):
         self.assertTrue(report['coverage_complete'])
         self.assertEqual(report['totals']['cached_input_tokens']['observed'], 140)
         self.assertNotIn('PRIVATE RESEARCH BODY', json.dumps(report))
+
+    def test_action_profile_uses_tool_identity_without_arguments(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / 'session.jsonl'
+            events = [
+                {'type': 'session_meta', 'payload': {'id': 'root-thread'}},
+                {'type': 'turn_context', 'payload': {'turn_id': 'paper-turn'}},
+                {'type': 'response_item', 'payload': {'type': 'function_call', 'name': 'wait_agent',
+                    'call_id': 'c1', 'arguments': 'PRIVATE WAIT ARGUMENTS'}},
+                {'type': 'token_usage_record', 'payload': {'thread_id': 'root-thread',
+                    'turn_id': 'paper-turn', 'response_id': 'r1',
+                    'usage': {'input_tokens': 100, 'cached_input_tokens': 90, 'output_tokens': 10},
+                    'turn_token_usage': {'input_tokens': 100, 'cached_input_tokens': 90, 'output_tokens': 10}}},
+                {'type': 'response_item', 'payload': {'type': 'function_call', 'name': 'list_agents',
+                    'call_id': 'c2', 'arguments': 'PRIVATE STATUS ARGUMENTS'}},
+                {'type': 'token_usage_record', 'payload': {'thread_id': 'root-thread',
+                    'turn_id': 'paper-turn', 'response_id': 'r2',
+                    'usage': {'input_tokens': 120, 'cached_input_tokens': 110, 'output_tokens': 12},
+                    'turn_token_usage': {'input_tokens': 220, 'cached_input_tokens': 200, 'output_tokens': 22}}},
+            ]
+            path.write_text('\n'.join(json.dumps(event) for event in events))
+            rows, diagnostics = read_records([path])
+            report = aggregate(rows, diagnostics=diagnostics)
+        self.assertEqual(report['action_profile']['wait']['input_tokens'], 100)
+        self.assertEqual(report['action_profile']['status']['responses'], 1)
+        self.assertEqual(rows[0]['call_id'], 'c1')
+        self.assertNotIn('PRIVATE', json.dumps(report))
 
     def test_receipt_missing_turn_total_blocks_complete_usage(self):
         with tempfile.TemporaryDirectory() as temp:

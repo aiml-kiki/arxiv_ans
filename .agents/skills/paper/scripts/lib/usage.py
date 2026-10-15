@@ -20,6 +20,20 @@ ALIASES = {'input_tokens': ('input_tokens', 'prompt_tokens'),
            'output_tokens': ('output_tokens', 'completion_tokens'),
            'reasoning_tokens': ('reasoning_tokens', 'reasoning_output_tokens')}
 SCOPES = ('response', 'cumulative', 'tree_total')
+ACTION_TAGS = {'wait', 'status', 'delegation', 'user_interaction', 'tool', 'multi_tool'}
+
+
+def action_for_tool(name):
+    """Classify a tool name without inspecting or exporting its arguments."""
+    if name in {'wait_agent', 'wait_threads', 'wait', 'sleep'}:
+        return 'wait'
+    if name in {'list_agents', 'get_worktree_creation_status'}:
+        return 'status'
+    if name in {'spawn_agent', 'followup_task', 'send_message', 'interrupt_agent'}:
+        return 'delegation'
+    if name in {'request_user_input', 'request_user_input_async'}:
+        return 'user_interaction'
+    return 'tool'
 
 
 def _number(value):
@@ -43,7 +57,12 @@ def normalize(record):
     row = {key: record.get(key) for key in ('run', 'unit', 'stage', 'thread_id', 'parent_thread_id',
         'turn_id', 'root_turn_id',
         'response_id', 'call_id', 'requested_model', 'actual_model', 'requested_effort', 'actual_effort',
-        'timestamp', 'elapsed_ms', 'meter_id', 'coverage_start', 'coverage_end')}
+        'timestamp', 'elapsed_ms', 'meter_id', 'coverage_start', 'coverage_end',
+        'action_tag', 'action_basis', 'tool_name')}
+    if row['action_tag'] is not None and row['action_tag'] not in ACTION_TAGS:
+        raise ValueError('action_tag 须为受控动作类别')
+    if row['tool_name'] is not None and (not isinstance(row['tool_name'], str) or len(row['tool_name']) > 128):
+        raise ValueError('tool_name 须为短工具名，不保存参数')
     row.update(measurement_scope=scope, cumulative=bool(record.get('cumulative', scope == 'cumulative')),
                covered_thread_ids=list(record.get('covered_thread_ids') or []),
                covered_response_ids=list(record.get('covered_response_ids') or []))
@@ -88,6 +107,7 @@ def read_records(paths, selected_turn_ids=None):
         legacy_rows, receipt_rows = [], []
         turn_receipts = defaultdict(dict)
         turn_totals = {}
+        pending_calls = []
         with path.open(encoding='utf-8') as stream:
             for line_number, line in enumerate(stream, 1):
                 if not line.strip():
@@ -110,6 +130,10 @@ def read_records(paths, selected_turn_ids=None):
                                'root_turn_id': payload.get('root_turn_id'),
                                'requested_model': payload.get('model'),
                                'requested_effort': payload.get('effort', payload.get('reasoning_effort'))}
+                    pending_calls = []
+                elif kind == 'response_item' and payload.get('type') in {'function_call', 'custom_tool_call'}:
+                    # Only tool identity enters the ledger. Arguments and message bodies stay local.
+                    pending_calls.append({'name': payload.get('name'), 'call_id': payload.get('call_id')})
                 elif kind == 'token_usage_record':
                     usage = payload.get('usage')
                     if not isinstance(usage, dict):
@@ -120,7 +144,16 @@ def read_records(paths, selected_turn_ids=None):
                     if (usage.get('total_tokens') is not None and
                             usage['total_tokens'] != usage.get('input_tokens', 0) + usage.get('output_tokens', 0)):
                         diagnostics.append({'kind': 'receipt_total_mismatch', 'line': line_number})
-                    row = normalize({**session, **context, 'timestamp': event.get('timestamp'),
+                    action = {}
+                    if len(pending_calls) == 1 and isinstance(pending_calls[0]['name'], str):
+                        action = {'action_tag': action_for_tool(pending_calls[0]['name']),
+                                  'action_basis': 'preceding_tool_call_same_turn',
+                                  'tool_name': pending_calls[0]['name'],
+                                  'call_id': pending_calls[0]['call_id']}
+                    elif len(pending_calls) > 1:
+                        action = {'action_tag': 'multi_tool', 'action_basis': 'multiple_preceding_calls'}
+                    pending_calls = []
+                    row = normalize({**session, **context, **action, 'timestamp': event.get('timestamp'),
                         'thread_id': payload.get('thread_id') or session.get('thread_id'),
                         'turn_id': payload.get('turn_id'), 'root_turn_id': payload.get('root_turn_id'),
                         'response_id': payload.get('response_id'), 'usage': usage})
@@ -198,6 +231,32 @@ def _covers(parent, child):
     if end is None or child_end is None:
         return False
     return (start is None or (child_start is not None and start <= child_start)) and child_end <= end
+
+
+def context_growth_profile(rows, window=5):
+    """Observed input growth only; never an automatic handover decision."""
+    by_thread = defaultdict(list)
+    for row in rows:
+        if (row['measurement_scope'] == 'response' and row.get('response_id') and row.get('thread_id')
+                and row.get('timestamp') and row['usage']['input_tokens'] is not None):
+            by_thread[row['thread_id']].append(row)
+    result = {}
+    for thread, values in by_thread.items():
+        ordered = sorted(values, key=lambda item: (item['timestamp'], item['response_id']))
+        n = min(window, len(ordered) // 2)
+        if n < 2:
+            result[thread] = {'available': False, 'responses': len(ordered),
+                              'reason': 'need_two_nonoverlapping_windows_of_at_least_two_responses'}
+            continue
+        previous = ordered[-2*n:-n]
+        recent = ordered[-n:]
+        mean = lambda group: round(sum(item['usage']['input_tokens'] for item in group) / len(group))
+        old, new = mean(previous), mean(recent)
+        result[thread] = {'available': True, 'responses': len(ordered), 'window_responses': n,
+                          'previous_mean_input_tokens': old, 'recent_mean_input_tokens': new,
+                          'observed_mean_change': new - old,
+                          'basis': 'two adjacent response windows; cached input included; stage mix may differ'}
+    return dict(sorted(result.items()))
 
 
 def aggregate(records, *, expected_threads=None, evaluation_scope=None, full_tree=False, diagnostics=None):
@@ -293,6 +352,19 @@ def aggregate(records, *, expected_threads=None, evaluation_scope=None, full_tre
     total_tokens = (totals['input_tokens']['observed'] + totals['output_tokens']['observed']
                     if totals['input_tokens']['observed'] is not None and totals['output_tokens']['observed'] is not None else None)
     scopes = sorted({row['measurement_scope'] for row in rows})
+    action_profile = defaultdict(lambda: {'responses': 0, 'input_tokens': 0, 'cached_input_tokens': 0,
+                                         'output_tokens': 0, 'missing_usage': 0})
+    for row in included:
+        if row['measurement_scope'] != 'response' or not row['response_id']:
+            continue
+        bucket = action_profile[row.get('action_tag') or 'unattributed']
+        bucket['responses'] += 1
+        for metric in ('input_tokens', 'cached_input_tokens', 'output_tokens'):
+            value = row['usage'][metric]
+            if value is None:
+                bucket['missing_usage'] += 1
+            else:
+                bucket[metric] += value
     return {'format': 'paper-usage-v1', 'evaluation_scope': evaluation_scope,
             'full_tree_requested': full_tree, 'coverage_complete': scope_complete,
             'expected_threads': sorted(expected), 'metered_threads': sorted(metered), 'unavailable_threads': missing_threads,
@@ -304,6 +376,9 @@ def aggregate(records, *, expected_threads=None, evaluation_scope=None, full_tre
             'response_count_scope': 'observed identified receipts only',
             'actual_model_unavailable': sum(row['actual_model'] is None for row in included),
             'actual_effort_unavailable': sum(row['actual_effort'] is None for row in included),
+            'action_profile': dict(sorted(action_profile.items())),
+            'action_attribution': 'preceding tool name associated with response; whole response context is not causal tool cost',
+            'context_growth': context_growth_profile(included),
             'records': included, 'unresolved_aggregates': unresolved_aggregates, 'excluded_records': excluded_records, 'diagnostics': issues,
             'accounting': 'input includes cached input; reasoning is an output subset, neither is added again',
             'unavailable': ['price/cost']}

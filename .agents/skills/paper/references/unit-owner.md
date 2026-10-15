@@ -1,10 +1,12 @@
 # 单元 owner：连续科学责任
 
-首次或真实物理替代时读能力入口与本契约；需要选模型/助手时读 [路由](../agents/routing.yaml)，当前阶段再读其指南。启动封套不加载全部入口、未来指南、全部协议、模板、48 叶目录或父历史。完整精读由同一科学责任 owner 主持三遍及成文；助手不承接整遍责任，已接受边界的物理 owner 交接须带源核证记录。
+首次或真实物理替代时读能力入口与本契约；需要选模型/助手时读 [路由](../agents/routing.yaml)，当前阶段再读其指南。启动封套不加载全部入口、未来指南、全部协议、模板、48 叶目录或父历史。完整精读在任一时刻只有一位科学责任 owner；在已接受边界有成本依据地物理交接时，由新 owner 核源并明确接管责任。助手不承接整遍责任。
 
 ## 科学承载与阶段循环
 
-每个 unit 的科学草稿为 `.research/work/<run>/units/<unit>/science.md`，并维护**一份短科学状态**；检查点、来源/产物版本及可推导元数据由脚本生成。R1/R2a/R2b/R2c/R3a/R3b 是科学接受边界，不各写长报告、answers 或 critical_details 副本。短科学状态只保存当前问题、已接受机制/边界、接口引用、必留细节、决定性证据/竞争解释、未知、用户约束与下一动作。
+每个 unit 的科学草稿为 `.research/work/<run>/units/<unit>/science.md`，并维护**一份短科学状态**；检查点、来源/产物版本及可推导元数据由脚本生成。默认 R1/R2a/R2b/R2c/R3a/R3b 是科学接受边界，不各写长报告、answers 或 critical_details 副本。短科学状态只保存当前问题、已接受机制/边界、接口引用、必留细节、决定性证据/竞争解释、未知、用户约束与下一动作。
+
+只有隔离评估显式设置 read unit 的 `checkpoint_mode: pass_trial` 时，R2a→R2b→R2c 与 R3a→R3b 仍依次读、写、按来源自查，但各自用 `workflow substep --payload` 记录可定位增量与固定证据；整遍 R2/R3 各做一次原子 checkpoint。未记录完内部问题不能提交整遍；全部不适用的内部问题逐项判定后以 `decision:not_applicable` 明确跳过。内部记录是临时进度，不是已接受科学结论；返工改动前一问题时定向 reopen 整遍，清除内部进度再顺序核证。原默认模式保持不变，只有质量与恢复测试不降且完整树计量有收益才推广。
 
 1. 首次取 `workflow bootstrap --run <run> --unit <unit>` 一次启动封套，之后取 `workflow next` 问题简包，核真实 owner 绑定。当前阶段默认一次调用 `workflow resource --kind bundle` 取得指南、协议片段和成文模板；它仅交付本 stage 资源并逐项记录路径、哈希和实际字节量。资源记录只证明内容已交付，不证明模型理解或完整 prompt token。稳定资源同 hash/section 已读则复用；变化、压缩恢复、补证或关键回查才用具体 kind/index 定向重读，必要时加 `--refresh`。`unchanged` 引用不是新阅读记录。预先合并同轮独立来源窗口查询，避免每一页、每一数字都引起一次模型往返；脚本 help、status 与整份科学稿也只在真正需要时读。批量读取不等于跳过逐项核证。
 2. 在 preparing 选适用任务并固定输入。旧正式页、冻结对照及下游需要的接口先登记真实快照再读；检查依赖后 begin，才进入 executing。`start-owner` 只绑定，不直接开始首轮。
@@ -16,7 +18,7 @@
 
 执行中发现缺材料，先进入 awaiting_input，暂停提交资格；补齐后回 preparing，仍由本人继续，不要求停止物理代理。用 `workflow step --operation awaiting-input --agent-id <本人ID>` 暂停，`workflow inputs --run <run> --unit <unit> --files <实际文件列表.json> --mode append|replace|changed-premise --reason <具体理由>` 登记变更；replace/changed-premise 还须 `--stage <最早受影响边界>`。append 保留旧来源，新增从此刻生效；replace/changed-premise 定位最早受影响边界并使其判断及最终验收失效；无关追加不重开正确机制，不回填此前已读。静默替换固定原文不可提交。
 
-真实中断或按 [上下文成本与证据交接](context-cost.md)在已接受边界主动交接时才 interrupt/handover；后者须记录成本理由、真实停止及新 owner 的关键来源复核。自动压缩不是主动压缩接口；当前未暴露主动工具就不编造调用。恢复先读短科学状态及最近有效检查点、当前指南，再按引用补读；不重放阶段历史。来源按问题页/段读取，公式/图表必要时看原图，不默认文本和整页图重复送。
+真实中断或按 [上下文成本与证据交接](context-cost.md)在已接受边界主动交接时才 interrupt/handover；后者须记录基于实际响应的保守全树成本理由、真实停止及新 owner 的关键来源复核。交接不以曾否调用助手为前提。自动压缩不是主动压缩接口；当前未暴露主动工具就不编造调用。恢复先读短科学状态及最近有效检查点、当前指南，再按引用补读；不重放阶段历史。来源按问题页/段读取，公式/图表必要时看原图，不默认文本和整页图重复送。
 
 ## 有收益的跨模型助手
 
@@ -42,9 +44,12 @@
 
 ```sh
 uv run python .agents/skills/paper/scripts/research.py --root . workflow checkpoint --run <run> --unit <unit> --agent-id <本人ID> --payload <实际checkpoint.json>
+uv run python .agents/skills/paper/scripts/research.py --root . workflow substep --run <试验run> --unit <read单元> --agent-id <本人ID> --payload <内部问题增量.json>
 uv run python .agents/skills/paper/scripts/research.py --root . runtime reserve --run <run> --unit <unit> --agent-id <父ownerID> --event <实际预留.json>
 ```
 
 checkpoint payload 包含 `transaction_id`、当前 `stage`、本次科学稿的 `draft_sha256`、`delta:[{locator,summary,task_ids}]`、本次 `evidence/coverage/judgment_changes/gaps`、短 `science_state`、具体 `finding:{review_kind,reviewer,summary,checks}` 与 `decision:accept|revise`；成文时提供 `candidates`。`delta.locator` 必须能定位实际标题、块 ID 或片段，summary 是其短含义，不重抄正文；短状态包含 `question/accepted_boundary/interfaces/critical_details/unresolved/next_action`。K1 无增量短退出附 `no_change_reason` 和 `relation_checks:[{target,reason}]`，仍给实际 evidence/coverage/finding；relation_checks.target 须是实际固定 inputs 或已接受路径，不能将虚构页面列为已查关系。它是必要检查记录，不产生空候选。字段以当前 help/契约为准，草稿 SHA 须由当前真实文件取得，其他固定版本和可推导元数据由脚本生成。
+
+试验 `substep` payload 只含当前 `substep`、草稿哈希、可定位 `delta`（覆盖当前适用任务）、固定 `evidence` 与真实 `self_check finding`；全部不适用时只含 `substep` 和 `decision:not_applicable`，以已登记的逐项理由为依据。整遍 checkpoint 仍需覆盖本遍的证据与判断，内部进度不能代替它。
 
 runtime `reserve/bind/complete/cancel` 均给 `--run --unit --agent-id <父ownerID> --event <真实JSON>`，status 只给 `--run`。bind 绑定真实 spawn/followup，已绑定助手真实结束/失败后 complete，cancel 仅释放未绑定预留；没有宿主调用回执不能填已执行。命令操作、原子检查点和科学核证分别记录，脚本接受不称独立科学验证。
