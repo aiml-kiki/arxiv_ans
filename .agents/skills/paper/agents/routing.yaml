@@ -11,6 +11,7 @@ profiles:
   read_owner_default: {model: gpt-6-sol, reasoning_effort: medium}
   locate: {model: gpt-6-luna, reasoning_effort: low}
   audit: {model: gpt-6-luna, reasoning_effort: medium}
+  bounded_analysis: {model: gpt-6-luna, reasoning_effort: medium}
   organize: {model: gpt-6-luna, reasoning_effort: high}
   explain: {model: gpt-6-sol, reasoning_effort: low}
   maintain: {model: gpt-6-sol, reasoning_effort: medium}
@@ -19,17 +20,23 @@ profiles:
   deep_read: {model: gpt-6-sol, reasoning_effort: high}
   deep_compare: {model: gpt-6-sol, reasoning_effort: high}
   trace: {model: gpt-6-sol, reasoning_effort: high}
-  critic: {model: gpt-6-sol, reasoning_effort: high}
+  critic: {model: gpt-6-astra, reasoning_effort: high}
+  independent_review: {model: gpt-6-sol, reasoning_effort: medium}
+  decisive_review: {model: gpt-6-astra, reasoning_effort: high}
 task_routes:
   deterministic_parse_hash_links_arithmetic: script
   source_identity_bounded_lookup: locate
   bounded_numeric_source_check: audit
+  bounded_experiment_control_or_measurement_alignment: bounded_analysis
+  bounded_candidate_mechanism_difference: bounded_analysis
   first_pass_orientation: read_owner_default
   mechanism_learning_proof: read_owner_default
   alternatives_author_defense: read_owner_default
   conclusion_changing_mechanism_conflict: critic
   conclusion_changing_attribution_or_alternative: critic
-  cross_paper_evolution_evidence: deep_compare
+  cross_paper_evolution_evidence: bounded_compare
+  conclusion_changing_cross_paper_conflict: critic
+  conclusion_changing_trace_lineage_or_knowledge_boundary: critic
   knowledge_dedup: organize
   knowledge_semantic_revision: maintain
   controlled_composition: compose
@@ -41,6 +48,9 @@ dispatch:
   initial_task_scope: entire_unit_goal_current_stage_resources
   parent_receives: final_report_or_actionable_exception
   parent_does_not_receive: intermediate_answers_evidence_coverage_logs
+  parent_after_bind: WAIT_OWNER_until_final_or_actionable_exception
+  wait_timeout_action: rearm_wait_without_status_or_draft_read
+  parent_final_packet: candidate_path_hash_source_version_conclusions_unresolved_checks_usage_refs
   unit_internal_checkpoints: true
   guidance_loads_current_stage_only: true
   helper_when: bounded_cross_tier_task_benefit_exceeds_full_tree_start_input_output_review_retry_wait_cost
@@ -49,8 +59,8 @@ dispatch:
   physical_owner_handover_when: accepted_pass_boundary_and_conservative_full_tree_net_saving_from_actual_response_growth
   physical_owner_handover_requires: actual_old_owner_stop_short_source_bound_state_new_owner_decisive_source_check
   read_owner_default: medium_continuous_owner_with_quality_fallback
-  low_tier_helper_when: bounded_source_or_numeric_check_cannot_be_cheaper_by_script_or_owner
-  high_tier_helper_when: central_mechanism_conflict_or_unexcluded_attribution_or_decisive_alternative
+  low_tier_helper_when: bounded_source_numeric_or_local_analysis_with_locator_acceptance_and_full_tree_benefit
+  high_tier_helper_when: conclusion_changing_dispute_with_explicit_claim_competing_explanations_source_windows_and_full_tree_benefit
   high_tier_helper_not_per_paper: true
   helper_return_requires: source_location_competing_explanations_distinguishing_observation_limits
   owner_verifies_decisive_helper_evidence: true
@@ -87,7 +97,7 @@ context:
   bootstrap_tokens_soft_target: [800, 1200]
   later_packet_tokens_soft_target: [300, 600]
   helper_return_tokens_soft_target: [300, 600]
-  event_wait: final_or_actionable_exception_by_default_user_requested_status_only
+  event_wait: WAIT_OWNER_final_or_actionable_exception_user_requested_status_only
   status_poll: only_for_capacity_exception_recovery_or_user_request
   stage_usage_attribution: actual_begin_to_checkpoint_only_else_unattributed
   token_metrics: actual_usage_only
@@ -113,6 +123,7 @@ concurrency:
   close_if_supported: true
   unavailable_close: report_open_capacity_not_fictitious_release
   no_helper_slot: owner_executes_or_waits
+  capacity_priority: conclusion_changing_review_before_optional_low_tier_helper_or_second_owner_start
   independent_source_io: bounded_async_or_threads
   independent_pdf_parsing: bounded_process_pool_only_on_cache_miss
   workflow_updates: serialized_by_script_lock_unit_owned
@@ -121,6 +132,9 @@ review:
   intermediate: owner_source_check_or_bounded_local_review
   review_kinds: [self_check, independent_review, final_review]
   self_check_is_independent_review: false
+  initial_independent_profile: independent_review
+  escalation_profile: decisive_review_only_for_conclusion_changing_dispute
+  local_revision_scope: candidate_diff_and_affected_source_pages_else_full_review
   parent_review: final_candidate_decisive_source_windows_only
   read_scientific_gate: central_claim_has_reconstructable_mechanism_challenged_assumption_competing_explanation_or_distinguishing_test
   reject_paraphrase_without_new_inference: true

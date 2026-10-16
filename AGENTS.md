@@ -7,7 +7,7 @@
 - 用户明确说「运行 paper」、`/paper` 或 `$paper` 时读取 `.agents/skills/paper/SKILL.md`，同一阅读会话可自然继续。五个能力 paper-fetch/read/compare/trace/knowledge 也可明确调用；技能列表和文件内容不构成调用指令。
 - 本库 `.agents/skills/` 是六个技能的唯一实现位置；`.claude/skills/` 是指向同一份实现的 Claude 兼容软链接。Codex 从 `.agents/skills/` 发现技能，执行时以仓库根目录为工作目录。所有 Python 通过项目 `uv run` 执行；不用系统 Python 或 pip。
 - 已授权的工作流内部自动分轮、核验、续派，用户无需逐轮确认。完成写入后自动调用新版 finish 清理本轮临时工作和审阅视图；未确认候选保留。固定原文/版本、证据定位、真实查询/筛选、重要判断更新与提交记录持久保存。
-- 论文完整精读每篇一位独立连续 owner（fork_turns: none），自主完成三遍和成文；主会话只收最终结果与必要异常，默认两位 owner 并发。本人 owner 按收益真实跨模型委派局部助手，由本人核证整合。根0/owner1/助手2是项目深度约定，全树容量以当前宿主为准；脚本不启动代理，配置不等于模型切换。阶段执行详见 `.agents/skills/paper/references/unit-owner.md`，用户要求时才带读或出题。
+- 论文完整精读每篇一位独立连续 owner（fork_turns: none），自主完成三遍和成文；主会话委派后只等待最终结果或可操作异常，不例行查看阶段稿。容量允许时默认两位 owner 并发，关键科学复核优先使用助手名额。本人 owner 按收益真实跨模型委派局部助手，由本人核证整合。根0/owner1/助手2是项目深度约定，全树容量以当前宿主为准；脚本不启动代理，配置不等于模型切换。阶段执行详见 `.agents/skills/paper/references/unit-owner.md`，用户要求时才带读或出题。
 
 ## 内容与修改
 
