@@ -403,7 +403,9 @@ def render_page(root, manifest, page, dpi=120):
             subprocess.run([program, '-f', str(page), '-l', str(page), '-r', str(dpi),
                             '-png', '-singlefile', str(raw), str(output)],
                            check=True, capture_output=True, timeout=60)
-    return {'image': str(image), 'page': page, 'limitation': '已渲染；阅读者须实际查看才记图像核验。'}
+    return {'image': str(image), 'image_sha256': digest(image.read_bytes()),
+            'source_sha256': data['source_sha256'], 'page': page, 'dpi': dpi,
+            'limitation': '已渲染；阅读者须实际查看才记图像核验。'}
 
 
 def main(argv=None):

@@ -12,6 +12,7 @@ profiles:
   locate: {model: gpt-6-luna, reasoning_effort: low}
   audit: {model: gpt-6-luna, reasoning_effort: medium}
   bounded_analysis: {model: gpt-6-luna, reasoning_effort: medium}
+  visual_candidate: {model: gpt-6-luna, reasoning_effort: medium}
   organize: {model: gpt-6-luna, reasoning_effort: high}
   explain: {model: gpt-6-sol, reasoning_effort: low}
   maintain: {model: gpt-6-sol, reasoning_effort: medium}
@@ -29,6 +30,7 @@ task_routes:
   bounded_numeric_source_check: audit
   bounded_experiment_control_or_measurement_alignment: bounded_analysis
   bounded_candidate_mechanism_difference: bounded_analysis
+  bounded_ambiguous_page_visual_candidate: visual_candidate
   first_pass_orientation: read_owner_default
   mechanism_learning_proof: read_owner_default
   alternatives_author_defense: read_owner_default
@@ -106,13 +108,21 @@ context:
   missing_token_telemetry: null
 model_resolution:
   source_of_truth: runtime_tool_capabilities
-  read_owner_profile: read_owner_default_unless_source_or_task_requires_high_at_start
+  decision_factors: [source_verifiability, conclusion_risk, context_dependency, full_tree_cost]
+  owner_prior_read: read_owner_default
+  owner_prior_regular_compare: bounded_compare
+  owner_prior_open_trace_or_complex_synthesis: medium_or_high_by_recorded_difficulty
+  local_screening_and_knowledge_dedup: script_then_bounded_low_tier_only_if_useful
+  owner_escalation: high_at_start_only_if_sustained_difficulty_else_targeted_high_helper_for_conclusion_changing_dispute
+  visual_candidate: ambiguous_local_page_only_after_deterministic_parse_and_net_benefit
   quality_fallback: raise_next_run_owner_or_targeted_helper_after_real_scientific_failure
   stage_route_is_preference_not_switch: true
   same_instance_switch_unsupported: bounded_helper_or_honest_same_model_fallback
   no_helper_for_each_leaf_or_trivial_stage: true
   root_model_is_not_changed_by_yaml: true
   unavailable_preference: map_by_capability_and_record_reason
+  actual_model_unobservable: null_and_report_requested_only
+  route_validation: static_config_host_capability_actual_spawn_bind_separate_bounded_samples
   never_create_agents_to_evade_limits: true
 concurrency:
   capacity_source: host_live_agent_tree
