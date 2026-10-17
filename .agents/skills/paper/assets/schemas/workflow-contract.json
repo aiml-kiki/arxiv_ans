@@ -25,7 +25,7 @@
     "candidates": "--run <id> [--finding <concrete group-integration finding>]",
     "start-owner": "--run <id> --unit <id> --event <真实首次spawn-json>",
     "adopt-owner": "--run <id> --unit <id> --event <既有同实例显式接管-json>",
-    "step": "--run <id> --unit <id> --agent-id <绑定owner真实ID> --operation begin|awaiting-input|submit|accept|revise [--payload <result或finding-json>]",
+    "step": "--run <id> --unit <id> --agent-id <绑定owner真实ID> --operation prepare|begin|awaiting-input|submit|accept|revise [--payload <result或finding-json>]",
     "report": "--run <id> --unit <id> [--report <独立最终摘要-json> | --finding <实际最终外部复核-json>]",
     "resource": "--run <id> --unit <id> --kind guide|protocol|template [--index <0-based>] [--section <当前轮实际标题，可重复>] [--refresh；明确补证/恢复重读]",
     "bootstrap": "--run <id> --unit <id> [--refresh]；每物理实例相同封套只返回unchanged引用",
@@ -194,7 +194,7 @@
     "evidence": "可选原消息定位"
   },
   "publication": "有实质候选要求全部适用边界接受、owner最终report当前绑定、真实final_review accept当前绑定、live候选hash及正式目标基线一致、唯一科学writer。candidates --finding不能跳过final_review；具体组机械检查及用户授权由review/publish再验证。无增量K检查无候选免独立finalreview。",
-  "multi_round": "unit正常路径：一次真实spawn绑定→bootstrap→当前resource→登记输入/条件任务→begin→科学增量+真实自查→checkpoint→下一阶段，全部完成后report和真实finalreview；interactive保留旧显式带读接口，历史记录不静默改写。",
+  "multi_round": "unit正常路径：真实spawn绑定→bootstrap一次→step prepare交付当前问题/未读资源→登记输入/条件任务→begin→科学增量+真实自查→checkpoint，其continuation只准备下一问题并交付资源增量；不自动begin或接受科学判断。全部完成后report和真实finalreview。",
   "owner": {
     "start-owner": "只接受unit且无owner的首次真实spawn；注册事实后preparing，先准备当前指南/输入/条件任务，再begin；绝不自动executing。",
     "adopt-owner": {
@@ -230,8 +230,8 @@
     ]
   },
   "packaging": {
-    "default": "bootstrap一次稳定封套；next默认仅当前question/task_refs/resource_refs/science_refs/变化约束/未知/next action。--detail full显式审计视图。",
-    "resources": "短ID如guide-0由当前stage实际guide/protocol/template索引解析，不猜路径；resource持久记录同物理实例+filehash+sections。相同再次请求默认unchanged，--refresh显式补证/恢复。",
+    "default": "bootstrap一次稳定封套；首次step prepare及之后的continuation交付当前question/未读资源/操作参数。next用于定向恢复；--detail full显式审计视图。",
+    "resources": "短ID按当前stage索引解析；step prepare与checkpoint/substep/tasks的continuation交付当前未读资源。同物理实例+filehash按小节去重，重叠请求只交付差额；--refresh显式补证/恢复。事务重放不再次交付continuation。",
     "recovery": "短科学状态+当前问题包+输入/接受记录引用；来源损坏回诊断和修复入口，不重放累计历史。",
     "measurement": "仅返回字符代理量；无准确tokenizer/actual usage不能宣称token量或成本达标。真实usage由usage模块按宿主记录聚合。"
   },
@@ -253,6 +253,7 @@
     "science_state": "{question,accepted_boundary,interfaces:[],critical_details:[],unresolved:[],next_action}；完整解释在科学草稿，此处保留恢复判断所需短状态。",
     "evidence": "沿用真实固定path+locator；coverage沿用实际访问模式和PDF/HTML/text定位；保存对应不可变原文件版本（含二进制），替换来源后仍可核旧依据。",
     "finding": "沿用具体self_check或实际independent_review；decision默认为accept，可revise并须finding.required_changes。",
+    "continuation": "接受后交付当前下一问题、未读资源和begin参数，只置preparing；不自动执行/接受下一科学阶段。资源错误则整次接受回滚；幂等重放不重发资源。",
     "candidates": "仅最终成文边界[{draft,target}]，唯一写者；正式目标基线自动绑定。",
     "knowledge_no_change": "仅K1可no_change_reason+relation_checks:[{target:实际已固定/已接受路径,reason}]短退出；仍须具体delta、真实依据/coverage/finding，无候选且judgment_changes为空。剩余K阶段跳过并留具体原因，不启动无增量finalreview。",
     "atomicity": "整体验证执行者/当前stage/依赖/草稿/增量/实际自查，失败不改变workflow接受状态；单次锁+原子状态写入。接受前各阶段不能预写结果再回填。脚本生成版本/任务覆盖/事件和receipt。"

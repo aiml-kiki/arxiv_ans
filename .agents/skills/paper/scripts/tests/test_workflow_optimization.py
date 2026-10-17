@@ -39,7 +39,7 @@ class WorkflowOptimization(unittest.TestCase):
     def plan(self, kind="read", units=None):
         return {"goal": "understand fixed mechanism", "units": units or [
             {"id": "u", "kind": kind, "inputs": [self.manifest] if kind == "read" else ["source.md"],
-             "target": {"read": "论文/A.md", "knowledge": "知识/A.md", "trace": "专题/A.md"}.get(kind)}]}
+             "target": {"read": "论文/A.md", "knowledge": "知识/A.md", "trace": "专题/A.md", "compare": "专题/A.md"}.get(kind)}]}
 
     def init(self, kind="read"):
         state = w.initialize(self.root, "probe", self.plan(kind))
@@ -351,6 +351,66 @@ class WorkflowOptimization(unittest.TestCase):
         w.prerequisite_records(self.root, state, state["units"]["u"])
         self.assertEqual((self.root / first["evidence_files"][0]["path"]).read_text(), "fixed scientific source")
 
+    def test_checkpoint_continuation_prepares_only_next_question_and_replay_is_quiet(self):
+        state = self.init()
+        first = w.owner_step(self.root, state, 'u', 'actual-owner', 'prepare')
+        self.assertEqual(first['status'], 'preparing')
+        self.assertIn('resources', first)
+        self.assertFalse(w.current_round(state['units']['u']).get('executions'))
+        self.prepare(state)
+        payload = self.payload(state)
+        result = w.checkpoint(self.root, state, 'u', 'actual-owner', payload)
+        continuation = result['continuation']
+        self.assertEqual(continuation['stage'], 'R2a')
+        self.assertEqual(continuation['status'], 'preparing')
+        self.assertFalse(w.current_round(state['units']['u']).get('executions'))
+        self.assertFalse(any(item.get('kind') == 'template' for item in continuation['resources']))
+        source = next(item for item in continuation['resources'] if item.get('ref') == 'protocol-0')
+        self.assertEqual(source['status'], 'unchanged')  # R1 already delivered this source section.
+        accepted = deepcopy(state)
+        replay = w.checkpoint(self.root, state, 'u', 'actual-owner', payload)
+        self.assertTrue(replay['idempotent_replay'])
+        self.assertNotIn('continuation', replay)
+        self.assertEqual(accepted, state)
+
+    def test_continuation_resource_failure_does_not_partially_accept(self):
+        state = self.init()
+        self.prepare(state)
+        payload = self.payload(state)
+        before = deepcopy(state)
+        with patch.object(w, 'resource_bundle', side_effect=ValueError('broken current guide')):
+            with self.assertRaisesRegex(ValueError, 'broken current guide'):
+                w.checkpoint(self.root, state, 'u', 'actual-owner', payload)
+        self.assertEqual(state, before)
+
+    def test_continuation_preserves_all_capability_boundaries(self):
+        for kind in ['read', 'compare', 'trace', 'knowledge']:
+            with self.subTest(kind=kind):
+                if kind == 'compare':
+                    self.put('other.md', 'second fixed paper input')
+                    plan = self.plan(kind)
+                    plan['units'][0]['inputs'].append('other.md')
+                    state = w.initialize(self.root, 'probe', plan)
+                    w.start_owner(self.root, state, 'u', {'observed': True, 'mode': 'spawn',
+                        'agent_id': 'actual-owner', 'tool': 'collaboration.spawn_agent', 'call_id': 'actual-call'})
+                else:
+                    state = self.init(kind)
+                expected = [stage['id'] for stage in state['units']['u']['rounds'] if stage['status'] != 'skipped']
+                seen = []
+                while w.current_round(state['units']['u']):
+                    self.prepare(state)
+                    stage = w.current_round(state['units']['u'])
+                    seen.append(stage['id'])
+                    reply = w.checkpoint(self.root, state, 'u', 'actual-owner', self.payload(state))
+                    current = w.current_round(state['units']['u'])
+                    if current:
+                        self.assertEqual(reply['continuation']['stage'], current['id'])
+                        self.assertEqual(current['status'], 'preparing')
+                        self.assertFalse(current.get('executions'))
+                    else:
+                        self.assertEqual(reply['continuation']['action'], 'report_final_result')
+                self.assertEqual(seen, expected)
+
     def test_small_packages_resource_dedup_and_explicit_refresh(self):
         state = self.init()
         one = w.bootstrap(self.root, state, "u")
@@ -367,6 +427,10 @@ class WorkflowOptimization(unittest.TestCase):
         self.assertEqual(unchanged["status"], "unchanged")
         self.assertEqual(unchanged["content_bytes"], resource["content_bytes"])
         self.assertIn("content", w.resource_packet(state, "u", "guide", 0, [], refresh=True))
+        delivered = next(row for row in state['units']['u']['resource_reads'].values()
+                         if row['path'] == resource['path'])
+        self.assertEqual(delivered['deliveries'], 2)
+        self.assertEqual(delivered['delivered_bytes_total'], 2 * resource['content_bytes'])
         composition_refs = w.protocol_refs(state["units"]["u"], {"base": "R4"}, True)
         writing = next(ref for ref in composition_refs if ref["path"].endswith("/writing.md"))
         obsidian = next(ref for ref in composition_refs if ref["path"].endswith("/obsidian.md"))

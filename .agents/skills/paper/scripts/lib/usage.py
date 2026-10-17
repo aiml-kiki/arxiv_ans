@@ -58,7 +58,7 @@ def normalize(record):
         'turn_id', 'root_turn_id',
         'response_id', 'call_id', 'requested_model', 'actual_model', 'requested_effort', 'actual_effort',
         'timestamp', 'elapsed_ms', 'meter_id', 'coverage_start', 'coverage_end',
-        'action_tag', 'action_basis', 'tool_name')}
+        'action_tag', 'action_basis', 'tool_name', 'session_origin', 'agent_path')}
     if row['action_tag'] is not None and row['action_tag'] not in ACTION_TAGS:
         raise ValueError('action_tag 须为受控动作类别')
     if row['tool_name'] is not None and (not isinstance(row['tool_name'], str) or len(row['tool_name']) > 128):
@@ -124,7 +124,15 @@ def read_records(paths, selected_turn_ids=None):
                 if not isinstance(payload, dict):
                     continue
                 if kind == 'session_meta':
-                    session = {'thread_id': payload.get('id'), 'parent_thread_id': payload.get('parent_thread_id')}
+                    source = payload.get('source')
+                    subagent = source.get('subagent') if isinstance(source, dict) else None
+                    spawn = subagent.get('thread_spawn') if isinstance(subagent, dict) else None
+                    origin = ('agent' if isinstance(spawn, dict) else 'auxiliary' if subagent is not None
+                              else 'root' if source in ('vscode', 'cli', 'exec') and not payload.get('parent_thread_id')
+                              else 'unknown')
+                    session = {'thread_id': payload.get('id'), 'parent_thread_id': payload.get('parent_thread_id'),
+                               'session_origin': origin,
+                               'agent_path': spawn.get('agent_path') if isinstance(spawn, dict) else None}
                 elif kind == 'turn_context':
                     context = {'turn_id': payload.get('turn_id'),
                                'root_turn_id': payload.get('root_turn_id'),
@@ -141,6 +149,8 @@ def read_records(paths, selected_turn_ids=None):
                         continue
                     if not payload.get('thread_id') or not payload.get('turn_id') or not payload.get('response_id'):
                         diagnostics.append({'kind': 'receipt_identity_unavailable', 'line': line_number})
+                    if payload.get('thread_id') and session.get('thread_id') != payload['thread_id']:
+                        diagnostics.append({'kind': 'receipt_session_thread_mismatch', 'line': line_number})
                     if (usage.get('total_tokens') is not None and
                             usage['total_tokens'] != usage.get('input_tokens', 0) + usage.get('output_tokens', 0)):
                         diagnostics.append({'kind': 'receipt_total_mismatch', 'line': line_number})
@@ -207,6 +217,50 @@ def read_records(paths, selected_turn_ids=None):
             chosen = [row for row in chosen if row['turn_id'] in selected_turn_ids.get(row['thread_id'], [])]
         rows.extend(chosen)
     return rows, diagnostics
+
+
+def validate_actor_scope(records, aliases, root_actor, actors, expected_threads):
+    """Use observed session roles, not a caller-supplied alias, to certify a tree."""
+    if not isinstance(aliases, dict) or any(not isinstance(k, str) or not isinstance(v, str)
+                                          for k, v in aliases.items()):
+        raise ValueError('actor_thread_ids 须为代理ID到真实线程ID的映射')
+    issues, by_thread = [], defaultdict(list)
+    for row in records:
+        by_thread[row.get('thread_id')].append(row)
+    bindings = {actor: aliases.get(actor, actor) for actor in set(actors) | {root_actor} if actor}
+    if len(set(bindings.values())) != len(bindings):
+        issues.append({'kind': 'actor_thread_binding_not_unique'})
+    omitted = sorted(actor for actor, thread in bindings.items() if thread not in set(expected_threads or []))
+    if omitted:
+        issues.append({'kind': 'registered_tree_actor_omitted', 'actors': omitted})
+    unbound = sorted(set(expected_threads or []) - set(bindings.values()))
+    if unbound:
+        issues.append({'kind': 'expected_thread_identity_unbound', 'threads': unbound})
+    for actor, thread in bindings.items():
+        rows = by_thread.get(thread, [])
+        if not rows:
+            issues.append({'kind': 'actor_identity_unavailable', 'actor': actor, 'thread_id': thread})
+            continue
+        if actor == root_actor:
+            valid = all(row.get('session_origin') == 'root' and not row.get('parent_thread_id') for row in rows)
+        else:
+            valid = all(row.get('session_origin') == 'agent' and row.get('agent_path') == actor for row in rows)
+        if not valid:
+            issues.append({'kind': 'root_identity_mismatch' if actor == root_actor else 'agent_identity_mismatch',
+                           'actor': actor, 'thread_id': thread})
+        elif actor != root_actor:
+            cursor, visited = thread, set()
+            while cursor != bindings.get(root_actor) and cursor not in visited:
+                visited.add(cursor)
+                parents = {row.get('parent_thread_id') for row in by_thread.get(cursor, [])}
+                cursor = next(iter(parents)) if len(parents) == 1 else None
+                if cursor is None or cursor not in bindings.values():
+                    break
+            if cursor != bindings.get(root_actor):
+                issues.append({'kind': 'agent_tree_parent_mismatch', 'actor': actor, 'thread_id': thread})
+    if not root_actor:
+        issues.append({'kind': 'root_actor_unavailable_for_full_tree'})
+    return issues
 
 
 def _key(row):
@@ -369,6 +423,7 @@ def aggregate(records, *, expected_threads=None, evaluation_scope=None, full_tre
             'full_tree_requested': full_tree, 'coverage_complete': scope_complete,
             'expected_threads': sorted(expected), 'metered_threads': sorted(metered), 'unavailable_threads': missing_threads,
             'totals': totals, 'total_tokens': total_tokens,
+            'total_tokens_scope': 'full_tree' if scope_complete else 'observed_records_only',
             'total_tokens_complete': scope_complete,
             'measurement_scopes': scopes, 'observations': len(rows), 'included_measurements': len(included),
             'duplicate_observations': duplicates, 'covered_measurements_excluded': len(excluded),
@@ -478,7 +533,8 @@ def stage_profile(root, run_id, records, actor_thread_ids):
             continue
         thread = row.get('thread_id')
         units = owner_units.get(thread, set())
-        bucket = ('root' if thread and thread == root_thread else
+        bucket = ('root' if thread and thread == root_thread and row.get('session_origin') == 'root'
+                  and not row.get('parent_thread_id') else
                   f'helper/{helper_threads[thread]}' if thread in helper_threads else
                   f'{next(iter(units))}/transition' if len(units) == 1 else 'unattributed')
         if len(units) == 1 and row.get('timestamp'):
@@ -525,20 +581,13 @@ def run(root, args):
         raise ValueError('selected_turn_ids 须为线程ID到非空 turn ID 数组的映射')
     records, diagnostics = read_records(args.input, selected_turn_ids=selected)
     run_metadata = attach_run_metadata(root, args.run, records) if getattr(args, 'run', None) else None
-    if run_metadata and manifest.get('full_tree'):
-        known = set(run_metadata['registered_actual_actors'])
-        if run_metadata['root_agent_id']:
-            known.add(run_metadata['root_agent_id'])
-        else:
-            diagnostics.append({'kind': 'root_actor_unavailable_for_full_tree'})
+    if manifest.get('full_tree'):
         aliases = manifest.get('actor_thread_ids') or {}
-        if not isinstance(aliases, dict) or any(not isinstance(key, str) or not isinstance(value, str)
-                for key, value in aliases.items()):
-            raise ValueError('actor_thread_ids 须为代理ID到真实线程ID的映射')
-        omitted = sorted(actor for actor in known if aliases.get(actor, actor)
-                         not in set(manifest.get('expected_threads') or []))
-        if omitted:
-            diagnostics.append({'kind': 'registered_tree_actor_omitted', 'actors': omitted})
+        root_actor = run_metadata['root_agent_id'] if run_metadata else manifest.get('root_agent_id', '/root')
+        known = set(run_metadata['registered_actual_actors']) if run_metadata else set()
+        known.update(aliases)
+        diagnostics.extend(validate_actor_scope(records, aliases, root_actor, known,
+                                                manifest.get('expected_threads')))
     report = aggregate(records, expected_threads=manifest.get('expected_threads'),
         evaluation_scope=manifest.get('evaluation_scope'), full_tree=bool(manifest.get('full_tree')),
         diagnostics=diagnostics)

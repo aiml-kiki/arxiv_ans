@@ -844,12 +844,37 @@ def bound_owner(unit: dict, agent_id: str, require_active: bool = True) -> None:
         raise ValueError("owner已中断/未真实恢复；先登记实际恢复宿主调用，不能以内部step冒充恢复")
 
 
-def owner_step(root: Path, state: dict, ident: str, agent_id: str, operation: str, payload: dict | None) -> dict:
+def prepare_packet(root: Path, state: dict, ident: str) -> dict:
+    """Prepare only the current question; deliver unread resources, never begin it."""
+    unit = find_unit(state, ident)
+    stage = current_round(unit)
+    if stage and stage['status'] in {'ready', 'revision_required'}:
+        stage['status'] = 'preparing'
+    packet = next_packet(root, state, ident)
+    if (stage and not packet.get('pending_tasks') and stage['status'] != 'awaiting_input'
+            and (not stage.get('substeps') or active_substep(stage) is not None)):
+        packet['resources'] = resource_bundle(state, ident)['resources']
+    if stage and stage['status'] == 'preparing' and not packet.get('pending_tasks'):
+        packet['begin'] = {'command': 'step', 'operation': 'begin',
+                           'run': state['run_id'], 'unit': ident,
+                           'agent_id': unit['owner']['agent_id'] if unit.get('owner') else None}
+    return packet
+
+
+def owner_step(root: Path, state: dict, ident: str, agent_id: str, operation: str, payload: dict | None = None) -> dict:
     unit = find_unit(state, ident)
     bound_owner(unit, agent_id)
     stage = current_round(unit)
     if not stage:
         raise ValueError("单元所有轮次已接受，使用report交最终摘要")
+    if operation == 'prepare':
+        if payload is not None or stage['status'] not in {'ready', 'preparing', 'revision_required'}:
+            raise ValueError('prepare仅准备当前未begin问题，不接受科学结果或跳过暂停/恢复')
+        working = deepcopy(state)
+        value = prepare_packet(root, working, ident)
+        state.clear()
+        state.update(working)
+        return value
     checkpoint = {"event": "internal_checkpoint", "event_type": "internal_checkpoint", "unit": ident,
                   "stage": stage["id"], "agent_id": agent_id, "operation": operation, "at": utc_now(),
                   "actual_host_call": False}
@@ -1004,9 +1029,10 @@ def checkpoint(root: Path, state: dict, ident: str, agent_id: str, payload: dict
     receipt.update(transaction_id=transaction, draft_sha256=draft["sha256"], semantic_verification_by_script=False)
     target.setdefault("transactions", {})[transaction] = {"request_sha256": request_sha, "agent_id": agent_id,
                                                          "draft": draft, "receipt": receipt}
+    continuation = prepare_packet(root, working, ident) if decision == 'accept' else None
     state.clear()
     state.update(working)
-    return receipt
+    return {**receipt, 'continuation': continuation}
 
 
 def substep_complete(root: Path, state: dict, ident: str, agent_id: str, payload: dict) -> dict:
@@ -1041,6 +1067,8 @@ def substep_complete(root: Path, state: dict, ident: str, agent_id: str, payload
         result = {'unit': ident, 'stage': stage['id'], 'skipped_substep': substep['id'],
                   'next_substep': following['id'] if following else None,
                   'action': 'read_next_substep' if following else 'checkpoint_current_pass'}
+        if following:
+            result['continuation'] = prepare_packet(root, working, ident)
         state.clear()
         state.update(working)
         return result
@@ -1092,7 +1120,7 @@ def substep_complete(root: Path, state: dict, ident: str, agent_id: str, payload
                    if unit['tasks'][key]['status'] == 'pending'}
         result = {'unit': ident, 'stage': stage['id'], 'accepted_substep': substep['id'],
                   'next_substep': following['id'], 'pending_tasks': pending,
-                  'resources': None if pending else resource_bundle(working, ident)}
+                  'continuation': prepare_packet(root, working, ident)}
     else:
         result = {'unit': ident, 'stage': stage['id'], 'accepted_substep': substep['id'],
                   'status': 'pass_ready_for_checkpoint', 'next': 'checkpoint current pass with full evidence/coverage'}
@@ -1277,17 +1305,41 @@ def resource_packet(state: dict, ident: str, kind: str, index: int, sections: li
     content_bytes = len(content.encode("utf-8"))
     file_sha256 = digest(file_bytes)
     instance = unit["owner"]["agent_id"] if unit.get("owner") else "unbound"
+    reads = unit.setdefault("resource_reads", {})
+    prior = [row for old_key, row in reads.items()
+             if row['path'] == str(path) and row['file_sha256'] == file_sha256
+             and (row.get('instance') == instance or old_key == digest(json.dumps(
+                 [instance, str(path), file_sha256, row.get('sections', [])], ensure_ascii=False)))]
+    requested = list(chosen)
+    if not refresh and prior:
+        covered = {section for row in prior for section in row.get('sections', [])}
+        if any(not row.get('sections') for row in prior):
+            return {'unit': ident, 'stage': stage['id'], 'status': 'unchanged',
+                    'ref': f'{kind}-{index}', 'file_sha256': file_sha256, 'sections': requested,
+                    'content_bytes': content_bytes, 'content_sha256': digest(content)}
+        if chosen:
+            chosen = [section for section in chosen if section not in covered]
+            if not chosen:
+                return {'unit': ident, 'stage': stage['id'], 'status': 'unchanged',
+                        'ref': f'{kind}-{index}', 'file_sha256': file_sha256, 'sections': requested,
+                        'content_bytes': content_bytes, 'content_sha256': digest(content)}
+            content = markdown_sections(raw, chosen)
+            content_bytes = len(content.encode('utf-8'))
     key = digest(json.dumps([instance, str(path), file_sha256, chosen], ensure_ascii=False))
     reference_id = f"{kind}-{index}"
-    reads = unit.setdefault("resource_reads", {})
     if key in reads and not refresh:
         return {"unit": ident, "stage": stage["id"], "substep": current['id'] if current is not stage else None,
                 "status": "unchanged", "ref": reference_id,
                 "file_sha256": file_sha256, "content_sha256": digest(content),
                 "content_bytes": content_bytes, "sections": chosen}
-    reads[key] = {"ref": reference_id, "path": str(path), "file_sha256": file_sha256,
+    previous = reads.get(key, {})
+    now = utc_now()
+    reads[key] = {"ref": reference_id, "path": str(path), "file_sha256": file_sha256, 'instance': instance,
                   "sections": chosen, "stage": stage["id"], "file_bytes": len(file_bytes),
-                  "content_bytes": content_bytes, "at": utc_now()}
+                  "content_bytes": content_bytes, "at": now,
+                  'first_at': previous.get('first_at', previous.get('at', now)),
+                  'deliveries': previous.get('deliveries', 1 if previous else 0) + 1,
+                  'delivered_bytes_total': previous.get('delivered_bytes_total', previous.get('content_bytes', 0)) + content_bytes}
     return {"unit": ident, "stage": stage["id"], "substep": current['id'] if current is not stage else None,
             "kind": kind, "index": index, "path": str(path),
             "file_sha256": file_sha256, "file_bytes": len(file_bytes), "content_bytes": content_bytes,
@@ -1996,7 +2048,7 @@ def main(argv: list[str] | None = None) -> int:
             command.add_argument("--plan", type=Path, required=True)
         if name == "step":
             command.add_argument("--agent-id", required=True)
-            command.add_argument("--operation", choices=("begin", "awaiting-input", "submit", "accept", "revise"), required=True)
+            command.add_argument("--operation", choices=("prepare", "begin", "awaiting-input", "submit", "accept", "revise"), required=True)
             command.add_argument("--payload", type=Path)
         if name == "report":
             group = command.add_mutually_exclusive_group()
@@ -2068,7 +2120,11 @@ def main(argv: list[str] | None = None) -> int:
                 elif command == "submit": value = submit(root, state, args.unit, read_json(inside(root, args.result)))
                 elif command in {"accept", "revise"}: value = review(root, state, args.unit, read_json(inside(root, args.finding)), command == "accept")
                 elif command == "reopen": value = reopen(state, args.unit, args.stage, args.reason)
-                elif command == "tasks": value = decide_tasks(state, args.unit, read_json(inside(root, args.decisions)))
+                elif command == "tasks":
+                    value = decide_tasks(state, args.unit, read_json(inside(root, args.decisions)))
+                    unit = find_unit(state, args.unit)
+                    if autonomy_mode(unit) == 'unit' and unit.get('owner_active'):
+                        value['continuation'] = prepare_packet(root, state, args.unit)
                 elif command == "repeat": value = repeat_round(state, args.unit, args.stage, args.reason)
                 elif command == "inputs": value = refresh_inputs(root, state, args.unit, read_json(inside(root, args.files)), args.reason, args.stage, args.mode)
                 elif command == "windows": value = locate_windows(root, state, args.unit, args.stage, read_json(inside(root, args.locations)))

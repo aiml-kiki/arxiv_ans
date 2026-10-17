@@ -8,6 +8,8 @@
 
 `usage.action_profile` 汇总与等待/状态/委派等动作关联的整次响应；`context_growth` 对同一线程的相邻响应窗口给实际输入均值变化。后者不控制交接：阶段混合、缓存与不同任务可造成波动，预测还须加新实例启动、核源、复核、返工、旧实例停止及估计误差。实际 model/effort 未由宿主回执暴露时保留 null。
 
+`actor_thread_ids` 只是待核映射：根线程须有无父线程的 root 元数据，代理须有匹配的 `thread_spawn.agent_path`；guardian 等宿主辅助线程不能替代根。缺真实根回执时只报已观察子树，不报全树总量或节省率。机械往返先用响应数、控制调用和交付字节作诊断，再用同范围真实 usage 验证，不能将工具关联输入当作工具的净成本。
+
 ## 最小证据索引
 
 只有同一页段会跨阶段、跨助手或交接复用，且预计减少的重复输入超过建索引及定向核证成本时才建。索引是 `.research/work/<run>/units/<unit>/evidence-index.json`，每项仅含 ID、固定 manifest/原文字节哈希、物理页、解析页内起止位置、片段哈希、用途；**不复制片段或判断正文**。可用 `research.py evidence build --run … --unit … --spec <窗口列表.json>` 建立、`evidence get --run … --unit … --ids id1,id2` 定向取片段。选段由阅读者负责，脚本只核哈希和位置；图、公式、关键表及会改变结论的冲突仍看原页并由 owner 复核。单次使用或只在同一已读上下文使用时，直接用 `source pages`，不增加索引。

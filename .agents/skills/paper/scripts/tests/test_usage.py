@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from lib.usage import aggregate, compare_reports, read_records, attach_run_metadata, stage_profile, normalize, context_growth_profile
+from lib.usage import aggregate, compare_reports, read_records, attach_run_metadata, stage_profile, normalize, context_growth_profile, validate_actor_scope
 
 
 SCOPE = {'source_versions': ['paper-a:v1'], 'question': 'same', 'research_scope': 'read+compare+knowledge+review',
@@ -228,6 +228,33 @@ class Usage(unittest.TestCase):
         self.assertEqual(metadata['root_agent_id'], 'root')
         self.assertEqual(rows[0]['requested_model'], 'cheap')
         self.assertIsNone(rows[0]['actual_model'])
+
+    def test_guardian_cannot_be_bound_as_root_and_agent_path_must_match(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / 'actual.jsonl'
+            events = [
+                {'type': 'session_meta', 'payload': {'id': 'guardian', 'parent_thread_id': 'real-root',
+                    'source': {'subagent': {'other': 'guardian'}}}},
+                {'type': 'token_usage_record', 'payload': {'thread_id': 'guardian', 'turn_id': 't',
+                    'response_id': 'r', 'usage': {'input_tokens': 100, 'output_tokens': 2},
+                    'turn_token_usage': {'input_tokens': 100, 'output_tokens': 2}}}]
+            path.write_text('\n'.join(json.dumps(event) for event in events))
+            rows, _ = read_records([path])
+            issues = validate_actor_scope(rows, {'/root': 'guardian'}, '/root', [], ['guardian'])
+            self.assertTrue(any(item['kind'] == 'root_identity_mismatch' for item in issues))
+            root = normalize(record(thread='real-root', session_origin='root', parent_thread_id=None))
+            owner = normalize(record(thread='owner', response='a', session_origin='agent',
+                                     agent_path='/root/owner', parent_thread_id='real-root'))
+            aliases = {'/root': 'real-root', '/root/owner': 'owner'}
+            self.assertEqual(validate_actor_scope([root, owner], aliases, '/root', ['/root/owner'],
+                                                 ['real-root', 'owner']), [])
+            owner['parent_thread_id'] = 'unrelated-root'
+            self.assertTrue(any(item['kind'] == 'agent_tree_parent_mismatch' for item in
+                validate_actor_scope([root, owner], aliases, '/root', ['/root/owner'], ['real-root', 'owner'])))
+            owner['parent_thread_id'] = 'real-root'
+            owner['agent_path'] = '/root/other'
+            self.assertTrue(any(item['kind'] == 'agent_identity_mismatch' for item in
+                validate_actor_scope([root, owner], aliases, '/root', ['/root/owner'], ['real-root', 'owner'])))
 
     def test_full_tree_manifest_cannot_omit_registered_helper_or_root(self):
         with tempfile.TemporaryDirectory() as temp:

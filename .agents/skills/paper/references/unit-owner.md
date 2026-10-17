@@ -8,11 +8,11 @@
 
 只有隔离评估显式设置 read unit 的 `checkpoint_mode: pass_trial` 时，R2a→R2b→R2c 与 R3a→R3b 仍依次读、写、按来源自查，但各自用 `workflow substep --payload` 记录可定位增量与固定证据；整遍 R2/R3 各做一次原子 checkpoint。未记录完内部问题不能提交整遍；全部不适用的内部问题逐项判定后以 `decision:not_applicable` 明确跳过。内部记录是临时进度，不是已接受科学结论；返工改动前一问题时定向 reopen 整遍，清除内部进度再顺序核证。原默认模式保持不变，只有质量与恢复测试不降且完整树计量有收益才推广。
 
-1. 首次取 `workflow bootstrap --run <run> --unit <unit>` 一次启动封套，之后取 `workflow next` 问题简包，核真实 owner 绑定。当前阶段默认一次调用 `workflow resource --kind bundle` 取得指南、协议片段和成文模板；它仅交付本 stage 资源并逐项记录路径、哈希和实际字节量。资源记录只证明内容已交付，不证明模型理解或完整 prompt token。稳定资源同 hash/section 已读则复用；变化、压缩恢复、补证或关键回查才用具体 kind/index 定向重读，必要时加 `--refresh`。`unchanged` 引用不是新阅读记录。预先合并同轮独立来源窗口查询，避免每一页、每一数字都引起一次模型往返；脚本 help、status 与整份科学稿也只在真正需要时读。批量读取不等于跳过逐项核证。
+1. 首次读一次 `workflow bootstrap` 并用 `workflow step --operation prepare --agent-id <本人ID>` 取得当前问题与未读资源。后续直接使用 checkpoint/substep/tasks 回执的 `continuation`，不再逐轮调用 next＋resource。只准备当前问题，不自动 begin 或接受科学判断；待适用性/输入缺口处理后本人 begin。恢复才取 next/recovery，资源变化、压缩丢失或关键回查用具体 kind/index 和必要的 `--refresh`；相同实例已交付的同哈希协议小节不重复发送。路径/哈希/交付字节不等于理解或真实 prompt token。
 2. 在 preparing 选适用任务并固定输入。旧正式页、冻结对照及下游需要的接口先登记真实快照再读；检查依赖后 begin，才进入 executing。`start-owner` 只绑定，不直接开始首轮。
 3. 沿当前问题读原文并向同一科学稿新增/修正解释、证据、必要配置和未知后果。每轮短状态写“相对前轮新增的推断→支持/反证→仍未决”，正文承载完整解释；重复摘录不算科学增量。第一遍保存接受后再读第二遍；第二遍机制/学习或证明/证据接受后，第三遍才基于这些结果重构、挑战并裁决。科学问题不能一次大 prompt 合并三遍。
-4. 回查影响判断的接口、条件及正负证据，记录具体问题、发现及定位。用原子 checkpoint 绑定本次增量位置、重要判断变化、真实覆盖、自查和草稿/来源版本；成功仅取状态/诊断/下一入口。失败原位修复，不部分推进；重复事务不重复接受。`self_check` 不是 `independent_review`，后者必须有真实另一执行者及调用记录。格式通过不等于科学通过。
-5. 当前边界接受后才取下一阶段。适用性判断具体记录；无变化不生成控制回答或空报告。机械错误只修字段，科学缺项回源并重开实际受影响判断，不猜参数。
+4. 回查影响判断的接口、条件及正负证据，记录具体问题、发现及定位。原子 checkpoint 绑定科学增量、真实覆盖、自查与草稿/来源哈希；接受后回执只准备下一阶段及其资源，失败不推进，事务重放不重复交付或接受。`self_check` 不冒充真实另一执行者的 `independent_review`，格式通过不等于科学通过。
+5. 复用当前上下文中已读来源和刚写的科学增量；以短状态和定位接续，不为取哈希或下个问题重读整份科学稿。整合、恢复、来源变化或冲突才定向重读。合并同轮独立来源窗口和确定性工具操作，使用回执参数而不反复查 help/status；原图、负证据和未知接口仍逐项核。无科学变化不写空报告，科学缺项回源并重开受影响判断。
 
 ## 输入暂停与恢复
 
@@ -45,6 +45,7 @@
 ## 最小事务接口
 
 ```sh
+uv run python .agents/skills/paper/scripts/research.py --root . workflow step --run <run> --unit <unit> --agent-id <本人ID> --operation prepare
 uv run python .agents/skills/paper/scripts/research.py --root . workflow checkpoint --run <run> --unit <unit> --agent-id <本人ID> --payload <实际checkpoint.json>
 uv run python .agents/skills/paper/scripts/research.py --root . workflow substep --run <试验run> --unit <read单元> --agent-id <本人ID> --payload <内部问题增量.json>
 uv run python .agents/skills/paper/scripts/research.py --root . runtime reserve --run <run> --unit <unit> --agent-id <父ownerID> --event <实际预留.json>
